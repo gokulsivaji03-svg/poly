@@ -1,0 +1,123 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+/*
+ * polycopy terminal theme — dark-first, hairline borders, one accent (amber),
+ * muted green/red reserved for P&L and direction.
+ */
+
+:root {
+  color-scheme: dark;
+  --radius: 0.25rem;
+
+  --background: #0a0c0f;
+  --foreground: #d4d9e0;
+  --card: #0e1115;
+  --card-foreground: #d4d9e0;
+  --popover: #12161b;
+  --popover-foreground: #d4d9e0;
+  --primary: #d9a441;
+  --primary-foreground: #15110a;
+  --secondary: #171c22;
+  --secondary-foreground: #c9cfd7;
+  --muted: #13171c;
+  --muted-foreground: #7a8491;
+  --accent: #181d24;
+  --accent-foreground: #e3e7ec;
+  --destructive: #b8504d;
+  --border: #1d232a;
+  --input: #252c35;
+  --ring: #d9a441;
+
+  --pos: #4ea97c;
+  --neg: #cf625d;
+  --warn: #d9a441;
+  --info: #6f97c6;
+  /* Historical replay: deliberately distinct from the PAPER accent. */
+  --replay: #a58bf0;
+  --faint: #4b535e;
+  --row-hover: #12161b;
+}
+
+@theme inline {
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --radius-sm: calc(var(--radius) - 1px);
+  --radius-md: var(--radius);
+  --radius-lg: calc(var(--radius) + 2px);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-pos: var(--pos);
+  --color-neg: var(--neg);
+  --color-warn: var(--warn);
+  --color-info: var(--info);
+  --color-replay: var(--replay);
+  --color-faint: var(--faint);
+  --color-row-hover: var(--row-hover);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    font-size: 13px;
+    line-height: 1.45;
+    font-feature-settings: "cv02", "ss01";
+  }
+  ::selection {
+    background: color-mix(in srgb, var(--primary) 35%, transparent);
+  }
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #262d36 transparent;
+  }
+}
+
+@layer utilities {
+  /* All numbers: monospace with tabular figures. */
+  .num {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums slashed-zero;
+    font-feature-settings: "tnum", "zero";
+    letter-spacing: -0.01em;
+  }
+  /* Small muted uppercase label. */
+  .label-caps {
+    font-size: 10.5px;
+    line-height: 1.2;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted-foreground);
+    font-weight: 500;
+  }
+  .pb-safe {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+}
