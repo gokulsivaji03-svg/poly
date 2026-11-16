@@ -23,6 +23,7 @@ from app.services.copy_signal import CopySignalService
 from app.services.equity_estimator import WalletEquityEstimator
 from app.services.event_bus import EventBus
 from app.services.event_store import TradeEventStore
+from app.services.hedge_scanner import HedgeScannerService
 from app.services.ledger import PortfolioLedger
 from app.services.market_data import MarketDataService
 from app.services.paper_execution import PaperExecutionEngine
@@ -54,6 +55,7 @@ class Runtime:
     copy: CopySignalService
     monitor: WalletMonitorService
     geoblock: GeoblockChecker
+    hedger: HedgeScannerService
     supervisor: Supervisor
     sdk: Any = None
     data_api_lag_s: int | None = None
@@ -146,6 +148,9 @@ class Runtime:
             copy=copy,
             monitor=monitor,
             geoblock=geoblock,
+            hedger=HedgeScannerService(
+                sm, ledger, executor, market_data, settings, events, bus, clock, account_id
+            ),
             supervisor=Supervisor(engine, clock),
             sdk=sdk,
         )
@@ -179,6 +184,16 @@ class Runtime:
                 stop, 300, self.reconcile, on_tick=lambda: sup.heartbeat("reconciliation")
             ),
         )
+        sup.add("hedge_scanner", self.hedger.run)
+        sup.add(
+            "settlement",
+            lambda stop: periodic(
+                stop, 60, self.settle, on_tick=lambda: sup.heartbeat("settlement")
+            ),
+        )
+
+    async def settle(self) -> None:
+        await self.hedger.settle_resolved()
 
     async def recover(self) -> None:
         """Startup reconciliation, run once by the leader before workers start."""
@@ -187,6 +202,13 @@ class Runtime:
             await self.events.record(
                 "RECOVERED_PENDING_ORDERS",
                 f"Failed {failed} orders left PENDING by a crash",
+                level="WARNING",
+            )
+        hedges = await self.hedger.recover()
+        if hedges:
+            await self.events.record(
+                "RECOVERED_PENDING_HEDGES",
+                f"Failed {hedges} hedges left pending by a crash",
                 level="WARNING",
             )
         resumed = await self.copy.resume_unfinished()

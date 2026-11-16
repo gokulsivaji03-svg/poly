@@ -83,8 +83,7 @@ async def equity_history(
 @router.get("/positions")
 async def positions(request: Request, _: User) -> dict[str, Any]:
     rt = rt_of(request)
-    states = getattr(rt, "hedge_states", lambda: {})()
-    return await q.positions(rt, states)
+    return await q.positions(rt, rt.hedger.states())
 
 
 @router.get("/orders")

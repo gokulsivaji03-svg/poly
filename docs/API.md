@@ -187,7 +187,8 @@ HedgeOpportunity = {
 
 | Method | Path | Response |
 |---|---|---|
-| POST | `/hedges/{id}/execute` | `{status, order_id, matched_shares, reason}` — manual paper hedge |
+| POST | `/hedges/{id}/execute` | `{status, order_id, matched_shares, reason, state}` — manual paper hedge (re-quotes first; rejected if no longer viable) |
+| POST | `/hedges/{id}/merge` | `{proceeds}` — simulate a CTF merge of matched pairs (paper only; not instantaneous on-chain) |
 | GET | `/hedges/events?limit=100` | `{events: [{id, condition_id, primary_token_id, kind, from_state, to_state, detail, created_at}]}` |
 
 ## Settings & control
