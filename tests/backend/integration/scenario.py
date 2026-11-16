@@ -202,9 +202,12 @@ class World:
             "orderPriceMinTickSize": 0.01,
             "orderMinSize": 1,
             "active": True,
-            "closed": False,
-            "acceptingOrders": True,
+            "closed": self.resolution is not None,
+            "acceptingOrders": self.resolution is None,
         }
+        # Real Gamma: the default listing hides closed markets; closed=true shows only them.
+        if (request.url.params.get("closed") == "true") != (self.resolution is not None):
+            return httpx.Response(200, json=[])
         if self.fee_rate is None:
             m["feesEnabled"] = True
         elif self.fee_rate == "0":

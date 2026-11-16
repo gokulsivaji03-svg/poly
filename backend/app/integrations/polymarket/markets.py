@@ -97,13 +97,20 @@ class MarketMetadataClient:
         self._clock = clock
 
     async def fetch(self, condition_id: str) -> MarketInfo | None:
-        body = await self._http.get_json(
-            f"{self._gamma}/markets", {"condition_ids": condition_id, "limit": 5}
-        )
-        rows = body if isinstance(body, list) else body.get("data", [])
-        match = next(
-            (m for m in rows if str(m.get("conditionId", "")).lower() == condition_id.lower()), None
-        )
+        # Gamma's default listing returns only open markets and ``closed=true`` only closed
+        # ones, so a market that just closed (and must now be settled) needs the second query.
+        match = None
+        for extra in ({}, {"closed": "true"}):
+            body = await self._http.get_json(
+                f"{self._gamma}/markets", {"condition_ids": condition_id, "limit": 5, **extra}
+            )
+            rows = body if isinstance(body, list) else body.get("data", [])
+            match = next(
+                (m for m in rows if str(m.get("conditionId", "")).lower() == condition_id.lower()),
+                None,
+            )
+            if match is not None:
+                break
         if match is None:
             return None
         info = parse_gamma_market(match, self._clock.now())
