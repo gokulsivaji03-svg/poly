@@ -126,6 +126,10 @@ def quote_hedge(
 
     if complement is None:
         return _no(cond, primary_token_id, hedge_token, "NOT_STANDARD_BINARY", **base)
+    if not market.complement_verified:
+        return _no(cond, primary_token_id, hedge_token, "COMPLEMENT_UNVERIFIED", **base)
+    if not market.fees_known:
+        return _no(cond, primary_token_id, hedge_token, "FEES_UNKNOWN", **base)
     if market.neg_risk and not settings.allow_neg_risk:
         return _no(cond, primary_token_id, hedge_token, "NEG_RISK_UNSUPPORTED", **base)
     if market.closed or market.resolved or not market.accepting_orders:

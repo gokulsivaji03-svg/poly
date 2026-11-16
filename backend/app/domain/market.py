@@ -174,6 +174,12 @@ class MarketInfo(Frozen):
     closed: bool = False
     accepting_orders: bool = True
     resolved: bool = False
+    payouts: dict[str, Dec] = Field(default_factory=dict)
+    """Per-token payout once resolved (1/0, or 0.5/0.5), from on-chain resolution data."""
+    fees_known: bool = True
+    """False when the fee schedule was unavailable and a conservative rate was assumed."""
+    complement_verified: bool = False
+    """True only when the token pair was cross-checked against ``/v2/tokens``."""
     end_date: datetime | None = None
     fetched_at: datetime
 
