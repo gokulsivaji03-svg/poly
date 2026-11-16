@@ -23,9 +23,12 @@ from app.db.models import (
     Account,
     AccountMode,
     CashReservation,
+    CopySignal,
     EntryKind,
     EquitySnapshot,
     Fill,
+    HedgeEvent,
+    HedgePosition,
     LedgerEntry,
     Lot,
     LotClosure,
@@ -194,8 +197,16 @@ class PortfolioLedger:
             lot_ids = select(Lot.id).where(Lot.account_id == account_id)
             await s.execute(delete(LotClosure).where(LotClosure.lot_id.in_(lot_ids)))
             await s.execute(delete(LedgerEntry).where(LedgerEntry.account_id == account_id))
+            hedge_ids = select(HedgePosition.id).where(HedgePosition.account_id == account_id)
+            await s.execute(delete(HedgeEvent).where(HedgeEvent.hedge_position_id.in_(hedge_ids)))
+            await s.execute(delete(HedgePosition).where(HedgePosition.account_id == account_id))
             await s.execute(delete(Lot).where(Lot.account_id == account_id))
             await s.execute(delete(Fill).where(Fill.account_id == account_id))
+            order_ids = select(Order.id).where(Order.account_id == account_id)
+            # Keep source-signal audit history, but detach the orders erased by this reset.
+            await s.execute(
+                update(CopySignal).where(CopySignal.order_id.in_(order_ids)).values(order_id=None)
+            )
             await s.execute(delete(Order).where(Order.account_id == account_id))
             await s.execute(delete(CashReservation).where(CashReservation.account_id == account_id))
             await s.execute(delete(EquitySnapshot).where(EquitySnapshot.account_id == account_id))
@@ -268,6 +279,33 @@ class PortfolioLedger:
                     return Reservation(rid, amount)
             except _InsufficientCash:
                 return None
+
+    async def sync_cash(self, account_id: int, observed: Decimal, memo: str) -> Decimal:
+        """Align a LIVE account's cash with the venue balance via an explicit ledger entry.
+
+        The delta is recorded (never silently overwritten) so conservation still holds.
+        """
+        async with self._sm() as s, s.begin():
+            acct = await s.get(Account, account_id, with_for_update=True)
+            if acct is None or acct.mode != AccountMode.LIVE:
+                raise LedgerError("cash sync is only valid for LIVE accounts")
+            delta = observed - acct.cash
+            if delta == ZERO:
+                return ZERO
+            if observed < acct.reserved:
+                raise LedgerError("venue balance below reserved cash; refusing to sync")
+            acct.cash = observed
+            s.add(
+                LedgerEntry(
+                    account_id=account_id,
+                    kind=EntryKind.DEPOSIT,
+                    amount=delta,
+                    cash_after=observed,
+                    memo=memo,
+                    created_at=self._clock.now(),
+                )
+            )
+            return delta
 
     async def release(self, reservation_id: int) -> None:
         async with self._sm() as s, s.begin():
@@ -400,14 +438,15 @@ class PortfolioLedger:
         order: Order,
         fill: FillSimulation,
         allow_matched: bool = False,
+        matched_only: bool = False,
         lot_ids: Sequence[int] | None = None,
         book_hash: str | None = None,
         book_received_at: datetime | None = None,
     ) -> list[LotClosure]:
         """Book a SELL fill FIFO across open lots. Never sells more than is held.
 
-        Matched (hedged) shares are untouchable unless ``allow_matched`` is set by an explicit
-        pair-unwind decision.
+        Matched (hedged) shares are untouchable unless ``allow_matched`` or ``matched_only``
+        is set by an explicit pair-unwind decision. ``matched_only`` preserves free shares.
         """
         if fill.side is not Side.SELL or not fill.filled:
             raise LedgerError("book_sell requires a non-empty SELL fill")
@@ -427,7 +466,11 @@ class PortfolioLedger:
             q = q.where(Lot.id.in_(lot_ids))
         lots = list((await s.scalars(q)).all())
         free = {
-            lt.id: lt.shares_remaining - (ZERO if allow_matched else lt.matched_shares)
+            lt.id: (
+                lt.matched_shares
+                if matched_only
+                else lt.shares_remaining - (ZERO if allow_matched else lt.matched_shares)
+            )
             for lt in lots
         }
         available = sum(free.values(), ZERO)
@@ -458,7 +501,9 @@ class PortfolioLedger:
                 else usdc_down(proceeds_total * take / fill.gross_shares)
             )
             allocated += proceeds
-            if allow_matched:
+            if matched_only:
+                lot.matched_shares -= take
+            elif allow_matched:
                 # Consume unmatched shares first; only the excess eats into matched shares.
                 unmatched = lot.shares_remaining - lot.matched_shares
                 lot.matched_shares -= max(ZERO, take - unmatched)
@@ -616,81 +661,89 @@ class PortfolioLedger:
     async def merge_matched(self, condition_id: str, account_id: int) -> Decimal:
         """Simulate a CTF merge of all matched pairs on a condition: each pair returns $1."""
         async with self._sm() as s, s.begin():
-            acct = await s.get(Account, account_id, with_for_update=True)
-            assert acct is not None
-            lots = (
-                await s.scalars(
-                    select(Lot)
-                    .where(
-                        Lot.account_id == account_id,
-                        Lot.condition_id == condition_id,
-                        Lot.matched_shares > 0,
-                    )
-                    .order_by(Lot.id)
-                    .with_for_update()
+            return await self.merge_matched_in(s, condition_id, account_id)
+
+    async def merge_matched_in(
+        self, s: AsyncSession, condition_id: str, account_id: int
+    ) -> Decimal:
+        """Merge within the caller's transaction, including any final halt check."""
+        acct = await s.get(Account, account_id, with_for_update=True)
+        assert acct is not None
+        if acct.mode == AccountMode.LIVE:
+            raise LedgerError("pair merging is only simulated for PAPER/REPLAY accounts")
+        lots = (
+            await s.scalars(
+                select(Lot)
+                .where(
+                    Lot.account_id == account_id,
+                    Lot.condition_id == condition_id,
+                    Lot.matched_shares > 0,
                 )
-            ).all()
-            by_token: dict[str, list[Lot]] = defaultdict(list)
-            for lot in lots:
-                by_token[lot.token_id].append(lot)
-            if len(by_token) != 2:
-                return ZERO
-            sides = list(by_token.values())
-            pairs = min(sum((lt.matched_shares for lt in side), ZERO) for side in sides)
-            if pairs <= ZERO:
-                return ZERO
-            now = self._clock.now()
-            proceeds_total = usdc_down(pairs * ONE)
-            # Each pair pays $1; attribute $0.50 per share to each leg so closures sum exactly.
-            half = usdc_down(proceeds_total / 2)
-            leg_proceeds = {0: half, 1: proceeds_total - half}
-            realized_total = ZERO
-            for side_idx, side in enumerate(sides):
-                left = pairs
-                allocated = ZERO
-                for lot in side:
-                    take = min(lot.matched_shares, left)
-                    if take <= ZERO:
-                        continue
-                    left -= take
-                    cost = _lot_cost_for(lot, take)
-                    proceeds = (
-                        leg_proceeds[side_idx] - allocated
-                        if left <= ZERO
-                        else usdc_down(leg_proceeds[side_idx] * take / pairs)
-                    )
-                    allocated += proceeds
-                    lot.matched_shares -= take
-                    lot.shares_remaining -= take
-                    lot.cost_remaining -= cost
-                    if lot.shares_remaining == ZERO:
-                        lot.cost_remaining = ZERO
-                        lot.closed_at = now
-                    s.add(
-                        LotClosure(
-                            lot_id=lot.id,
-                            kind="MERGE",
-                            shares=take,
-                            proceeds=proceeds,
-                            cost_released=cost,
-                            realized_pnl=proceeds - cost,
-                            closed_at=now,
-                        )
-                    )
-                    realized_total += proceeds - cost
-            acct.cash += proceeds_total
-            acct.realized_pnl += realized_total
-            s.add(
-                LedgerEntry(
-                    account_id=account_id,
-                    kind=EntryKind.MERGE,
-                    amount=proceeds_total,
-                    cash_after=acct.cash,
-                    memo=f"Merged {pairs} pairs on {condition_id}",
-                    created_at=now,
-                )
+                .order_by(Lot.id)
+                .with_for_update()
             )
-            return proceeds_total
+        ).all()
+        by_token: dict[str, list[Lot]] = defaultdict(list)
+        for lot in lots:
+            by_token[lot.token_id].append(lot)
+        if len(by_token) != 2:
+            return ZERO
+        sides = list(by_token.values())
+        pairs = min(sum((lt.matched_shares for lt in side), ZERO) for side in sides)
+        if pairs <= ZERO:
+            return ZERO
+        now = self._clock.now()
+        proceeds_total = usdc_down(pairs * ONE)
+        # Each pair pays $1; attribute $0.50 per share to each leg so closures sum exactly.
+        half = usdc_down(proceeds_total / 2)
+        leg_proceeds = {0: half, 1: proceeds_total - half}
+        realized_total = ZERO
+        for side_idx, side in enumerate(sides):
+            left = pairs
+            allocated = ZERO
+            for lot in side:
+                take = min(lot.matched_shares, left)
+                if take <= ZERO:
+                    continue
+                left -= take
+                cost = _lot_cost_for(lot, take)
+                proceeds = (
+                    leg_proceeds[side_idx] - allocated
+                    if left <= ZERO
+                    else usdc_down(leg_proceeds[side_idx] * take / pairs)
+                )
+                allocated += proceeds
+                lot.matched_shares -= take
+                lot.shares_remaining -= take
+                lot.cost_remaining -= cost
+                if lot.shares_remaining == ZERO:
+                    lot.cost_remaining = ZERO
+                    lot.closed_at = now
+                s.add(
+                    LotClosure(
+                        lot_id=lot.id,
+                        kind="MERGE",
+                        shares=take,
+                        proceeds=proceeds,
+                        cost_released=cost,
+                        realized_pnl=proceeds - cost,
+                        closed_at=now,
+                    )
+                )
+                realized_total += proceeds - cost
+        acct.cash += proceeds_total
+        acct.realized_pnl += realized_total
+        s.add(
+            LedgerEntry(
+                account_id=account_id,
+                kind=EntryKind.MERGE,
+                amount=proceeds_total,
+                cash_after=acct.cash,
+                memo=f"Merged {pairs} pairs on {condition_id}",
+                created_at=now,
+            )
+        )
+        return proceeds_total
 
     # ------------------------------------------------------------------- views
     async def open_lots(self, account_id: int, condition_id: str | None = None) -> list[Lot]:
