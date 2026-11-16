@@ -432,3 +432,33 @@ class HedgeEvent(Base):
     to_state: Mapped[str | None] = mapped_column(String(24))
     detail: Mapped[dict[str, Any]]
     created_at: Mapped[datetime] = mapped_column(index=True)
+
+
+# ---------------------------------------------------------------------------- replay
+class BookSnapshot(Base):
+    """Recorded executable book; the only price source historical replay may use."""
+
+    __tablename__ = "book_snapshots"
+    __table_args__ = (Index("ix_book_snapshots_token_ts", "token_id", "received_at"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    token_id: Mapped[str] = mapped_column(String(100))
+    condition_id: Mapped[str] = mapped_column(String(80))
+    received_at: Mapped[datetime]
+    bids: Mapped[dict[str, Any]]
+    asks: Mapped[dict[str, Any]]
+    tick_size: Mapped[Decimal]
+    min_order_size: Mapped[Decimal]
+    hash: Mapped[str | None] = mapped_column(String(80))
+
+
+class ReplayRun(Base):
+    __tablename__ = "replay_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    status: Mapped[str] = mapped_column(String(12))
+    params: Mapped[dict[str, Any]]
+    result: Mapped[dict[str, Any] | None]
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime]
+    finished_at: Mapped[datetime | None]

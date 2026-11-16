@@ -128,6 +128,9 @@ class WalletEquityEstimator:
             return None
         return next((p.size for p in positions if p.token_id == token_id), ZERO)
 
+    point_in_time = False
+    """When True (replay), never read snapshots observed after the current clock."""
+
     async def estimate_at(
         self, wallet_id: int, wallet: str, ts: datetime, *, exclude_event_id: int | None = None
     ) -> EquityEstimate:
@@ -142,16 +145,15 @@ class WalletEquityEstimator:
                 .order_by(WalletEquitySnapshot.observed_at.desc())
                 .limit(1)
             )
-            after = await s.scalar(
-                select(WalletEquitySnapshot)
-                .where(
-                    WalletEquitySnapshot.wallet_id == wallet_id,
-                    WalletEquitySnapshot.observed_at > ts,
-                    WalletEquitySnapshot.coverage != EquityCoverage.UNAVAILABLE.value,
-                )
-                .order_by(WalletEquitySnapshot.observed_at)
-                .limit(1)
+            after_q = select(WalletEquitySnapshot).where(
+                WalletEquitySnapshot.wallet_id == wallet_id,
+                WalletEquitySnapshot.observed_at > ts,
+                WalletEquitySnapshot.coverage != EquityCoverage.UNAVAILABLE.value,
             )
+            if self.point_in_time:
+                # Replay: snapshots observed after the replay clock are future data.
+                after_q = after_q.where(WalletEquitySnapshot.observed_at <= self._clock.now())
+            after = await s.scalar(after_q.order_by(WalletEquitySnapshot.observed_at).limit(1))
             candidates = [c for c in (before, after) if c is not None]
             if not candidates:
                 return unavailable(wallet, ts, self._clock.now(), "No usable equity snapshot.")

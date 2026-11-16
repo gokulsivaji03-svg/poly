@@ -27,7 +27,17 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.clock import Clock
 from app.core.money import ONE, ZERO
-from app.db.models import HedgeEvent, HedgePosition, Lot, LotOrigin, OrderKind, OrderStatus
+from app.db.models import (
+    Account,
+    AccountMode,
+    HedgeEvent,
+    HedgePosition,
+    Lot,
+    LotOrigin,
+    Order,
+    OrderKind,
+    OrderStatus,
+)
 from app.domain.fills import simulate_sell
 from app.domain.hedge import HedgeLot, HedgeQuote, quote_hedge
 from app.domain.hedge_state import (
@@ -41,9 +51,14 @@ from app.domain.hedge_state import (
 from app.domain.market import FeeModel, MarketInfo, Side
 from app.domain.settings import HedgedSellPolicy, HedgeMode, StrategySettings
 from app.services.event_bus import EventBus
-from app.services.ledger import PortfolioLedger
+from app.services.ledger import LedgerError, PortfolioLedger
 from app.services.market_data import MarketDataService
-from app.services.paper_execution import ExecutionRequest, ExecutionResult, PaperExecutionEngine
+from app.services.paper_execution import (
+    ExecutionRequest,
+    ExecutionResult,
+    PaperExecutionEngine,
+    apply_slippage,
+)
 from app.services.settings_service import SettingsService
 from app.services.system_events import SystemEventLog
 
@@ -491,10 +506,14 @@ class HedgeScannerService:
     # ------------------------------------------------------ unwind / settlement
     async def review_unwind(self, condition_id: str) -> str:
         """Under UNWIND_IF_BETTER, sell matched pairs only if both legs' bids beat $1/pair."""
-        settings = await self._settings.get(refresh=True)
-        if settings.copy_.hedged_sell_policy is not HedgedSellPolicy.UNWIND_IF_BETTER:
-            return "POLICY_PRESERVE"
         async with self._locks[condition_id]:
+            settings = await self._settings.get(refresh=True)
+            if settings.trading_halted:
+                return "TRADING_HALTED"
+            if settings.copy_.hedged_sell_policy is not HedgedSellPolicy.UNWIND_IF_BETTER:
+                return "POLICY_PRESERVE"
+            if (await self._ledger.get_account(self.account_id)).mode == AccountMode.LIVE:
+                return "PAPER_ONLY"
             lots = await self._ledger.open_lots(self.account_id, condition_id)
             by_token: dict[str, Decimal] = defaultdict(lambda: ZERO)
             for lt in lots:
@@ -507,11 +526,22 @@ class HedgeScannerService:
                 return "MARKET_UNAVAILABLE"
             fees = FeeModel(schedule=market.fee_schedule)
             proceeds = ZERO
+            legs = []
+            max_age = timedelta(seconds=settings.risk.max_book_age_s)
             for token in by_token:
                 book = await self._md.get_book(token, fresh=True)
                 if book is None:
                     return "NO_BOOK"
-                sim = simulate_sell(book, fees, shares=pairs, share_step=settings.paper.share_step)
+                if book.token_id != token:
+                    return "BOOK_TOKEN_MISMATCH"
+                if book.is_stale(self._clock.now(), max_age):
+                    return "STALE_BOOK"
+                sim = simulate_sell(
+                    apply_slippage(book, settings.paper.extra_slippage_bps),
+                    fees,
+                    shares=pairs,
+                    share_step=settings.paper.share_step,
+                )
                 if sim.gross_shares < pairs:
                     await self._events.record(
                         "UNWIND_SKIPPED",
@@ -519,6 +549,9 @@ class HedgeScannerService:
                         data={"condition_id": condition_id},
                     )
                     return "INSUFFICIENT_DEPTH"
+                if sim.gross_shares < max(book.min_order_size, market.min_order_size):
+                    return "BELOW_MIN_ORDER_SIZE"
+                legs.append((book, sim))
                 proceeds += sim.cash_delta
             locked_value = pairs * ONE
             if proceeds <= locked_value:
@@ -529,27 +562,56 @@ class HedgeScannerService:
                     data={"condition_id": condition_id},
                 )
                 return "HOLD_BETTER"
-            stamp = self._clock.now().isoformat()
-            for token in by_token:
-                await self._exec.execute(
-                    ExecutionRequest(
-                        account_id=self.account_id,
-                        idempotency_key=f"unwind-{token}-{stamp}",
-                        kind=OrderKind.PAIR_UNWIND,
-                        side=Side.SELL,
-                        condition_id=condition_id,
-                        token_id=token,
-                        fee_model=fees,
-                        max_book_age=timedelta(seconds=settings.risk.max_book_age_s),
-                        target_shares=pairs,
-                        allow_matched=True,
-                    ),
-                    share_step=settings.paper.share_step,
+            # Both paper fills use the reviewed books and commit together. Sequential venue
+            # executions could fill only one leg, leaving the formerly locked pair exposed.
+            try:
+                async with self._sm() as s, s.begin():
+                    acct = await s.get(Account, self.account_id, with_for_update=True)
+                    if acct is None or acct.mode == AccountMode.LIVE:
+                        return "PAPER_ONLY"
+                    if (await self._settings.get(refresh=True)).trading_halted:
+                        return "TRADING_HALTED"
+                    now = self._clock.now()
+                    if any(book.is_stale(now, max_age) for book, _ in legs):
+                        return "STALE_BOOK"
+                    for book, sim in legs:
+                        order = Order(
+                            account_id=self.account_id,
+                            idempotency_key=f"unwind-{self.account_id}-{book.token_id}-{now.isoformat()}",
+                            mode=acct.mode,
+                            kind=OrderKind.PAIR_UNWIND,
+                            side=Side.SELL.value,
+                            condition_id=condition_id,
+                            token_id=book.token_id,
+                            requested_shares=pairs,
+                            status=OrderStatus.FILLED,
+                            created_at=now,
+                            completed_at=now,
+                            book_age_ms=int(book.age(now).total_seconds() * 1000),
+                            exec_latency_ms=0,
+                        )
+                        s.add(order)
+                        await s.flush()
+                        await self._ledger.book_sell(
+                            s,
+                            order=order,
+                            fill=sim,
+                            matched_only=True,
+                            book_hash=book.hash,
+                            book_received_at=book.received_at,
+                        )
+            except LedgerError as exc:
+                await self._events.record(
+                    "UNWIND_SKIPPED",
+                    f"Matched inventory changed before paired unwind: {exc}",
+                    data={"condition_id": condition_id},
                 )
+                return "INVENTORY_CHANGED"
             await self._events.record(
                 "PAIR_UNWOUND", f"Unwound {pairs} pairs on {condition_id}", level="WARNING"
             )
             self._bus.publish("portfolio", {})
+            self._bus.publish("positions", {})
             return "UNWOUND"
 
     async def settle_resolved(self) -> int:
@@ -593,8 +655,13 @@ class HedgeScannerService:
     async def merge(self, key: str) -> dict[str, Any]:
         """Simulate a CTF merge of matched pairs (paper). Not instantaneous on-chain."""
         cond, _, _ = key.partition(":")
-        async with self._locks[cond]:
-            proceeds = await self._ledger.merge_matched(cond, self.account_id)
+        async with self._locks[cond], self._sm() as s, s.begin():
+            acct = await s.get(Account, self.account_id, with_for_update=True)
+            if acct is None or acct.mode == AccountMode.LIVE:
+                return {"proceeds": "0", "reason": "PAPER_ONLY"}
+            if (await self._settings.get(refresh=True)).trading_halted:
+                return {"proceeds": "0", "reason": "TRADING_HALTED"}
+            proceeds = await self._ledger.merge_matched_in(s, cond, self.account_id)
         if proceeds > ZERO:
             await self._events.record("PAIRS_MERGED", f"Simulated merge on {cond}: {proceeds}")
             self._bus.publish("portfolio", {})
