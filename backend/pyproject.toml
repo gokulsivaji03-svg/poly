@@ -1,0 +1,64 @@
+[project]
+name = "polycopy"
+version = "0.1.0"
+description = "Polymarket wallet copy-trading and complementary-outcome hedging terminal (paper-first)."
+authors = [{ name = "Gokul Sivaji", email = "gokulsivaji03@gmail.com" }]
+requires-python = ">=3.12"
+dependencies = [
+    "aiosqlite>=0.22.1",
+    "alembic>=1.20.1",
+    "argon2-cffi>=25.1.0",
+    "asyncpg>=0.32.0",
+    "fastapi>=0.163.1",
+    "httpx>=0.28.1",
+    "polymarket-client>=0.18.0",
+    "pydantic>=2.8",
+    "pydantic-settings>=2.16.3",
+    "pyjwt>=2.9",
+    "sqlalchemy[asyncio]>=2.0",
+    "uvicorn[standard]>=0.54.0",
+    "websockets>=15.0.1",
+]
+
+[dependency-groups]
+dev = [
+    "basedpyright>=1.40.2",
+    "hypothesis>=6.170.15",
+    "pytest>=9.2.0",
+    "pytest-asyncio>=1.5.0",
+    "respx>=0.23.1",
+    "ruff>=0.17.5",
+]
+
+[build-system]
+requires = ["uv_build>=0.13.1,<0.14.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "app"
+module-root = ""
+
+[tool.pytest.ini_options]
+testpaths = ["../tests/backend"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+filterwarnings = ["error::RuntimeWarning"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["app", "../tests/backend"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "ASYNC", "S", "DTZ", "T20"]
+ignore = ["S101", "RUF012", "B008"]
+
+[tool.ruff.lint.per-file-ignores]
+"../tests/**" = ["S", "DTZ"]
+"alembic/**" = ["E501"]
+
+[tool.basedpyright]
+include = ["app"]
+pythonVersion = "3.12"
+typeCheckingMode = "standard"
+reportMissingTypeStubs = false
