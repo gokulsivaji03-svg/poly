@@ -7,6 +7,7 @@ converted through ``repr`` so the exact printed digits are preserved.
 from __future__ import annotations
 
 import decimal
+from datetime import datetime, timedelta
 from decimal import ROUND_DOWN, ROUND_UP, Decimal
 
 for _ctx in (decimal.DefaultContext, decimal.getcontext()):
@@ -65,3 +66,9 @@ def floor_to_step(value: Decimal, step: Decimal) -> Decimal:
 
 def clamp(value: Decimal, low: Decimal, high: Decimal) -> Decimal:
     return max(low, min(high, value))
+
+
+def hours_between(a: datetime, b: datetime) -> Decimal:
+    """Absolute distance between two datetimes in hours, computed without floats."""
+    micros = abs(b - a) // timedelta(microseconds=1)
+    return Decimal(micros) / Decimal(3_600_000_000)

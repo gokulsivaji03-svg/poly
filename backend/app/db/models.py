@@ -266,3 +266,138 @@ class SystemEvent(Base):
     message: Mapped[str] = mapped_column(Text)
     data: Mapped[dict[str, Any]]
     created_at: Mapped[datetime] = mapped_column(index=True)
+
+
+# --------------------------------------------------------------------------- wallets
+class SignalStatus(StrEnum):
+    PENDING = "PENDING"
+    SKIPPED = "SKIPPED"
+    """Not attempted: policy (unfollowed, backfill, sizing skip, non-copyable)."""
+    REJECTED = "REJECTED"
+    """Risk engine or execution refused it."""
+    EXECUTED = "EXECUTED"
+    PARTIAL = "PARTIAL"
+    FAILED = "FAILED"
+
+
+class WatchedWallet(Base):
+    __tablename__ = "watched_wallets"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    address: Mapped[str] = mapped_column(String(42), unique=True)
+    nickname: Mapped[str] = mapped_column(String(64), default="")
+    follow: Mapped[bool] = mapped_column(default=True)
+    sizing_override: Mapped[dict[str, Any] | None]
+    added_at: Mapped[datetime]
+    followed_since: Mapped[datetime]
+    """Trades with block time before this are history only and are never copied."""
+    removed_at: Mapped[datetime | None]
+    hwm_ts: Mapped[datetime | None]
+    """High-water mark: latest block time fully ingested (polls re-read an overlap before it)."""
+    last_polled_at: Mapped[datetime | None]
+    last_success_at: Mapped[datetime | None]
+    last_trade_at: Mapped[datetime | None]
+    last_error: Mapped[str | None] = mapped_column(Text)
+    consecutive_failures: Mapped[int] = mapped_column(default=0)
+
+
+class SourceEvent(Base):
+    __tablename__ = "source_events"
+    __table_args__ = (Index("ix_source_events_wallet_ts", "wallet_id", "block_ts"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    wallet_id: Mapped[int] = mapped_column(ForeignKey("watched_wallets.id"), index=True)
+    event_key: Mapped[str] = mapped_column(String(64), unique=True)
+    occurrence: Mapped[int] = mapped_column(default=0)
+    type: Mapped[str] = mapped_column(String(16))
+    raw_type: Mapped[str] = mapped_column(String(32))
+    side: Mapped[str | None] = mapped_column(String(4))
+    condition_id: Mapped[str] = mapped_column(String(80), index=True)
+    token_id: Mapped[str] = mapped_column(String(100))
+    outcome: Mapped[str] = mapped_column(String(64), default="")
+    outcome_index: Mapped[int | None]
+    size: Mapped[Decimal]
+    usdc_size: Mapped[Decimal]
+    price: Mapped[Decimal]
+    tx_hash: Mapped[str] = mapped_column(String(80), index=True)
+    block_ts: Mapped[datetime]
+    detected_at: Mapped[datetime] = mapped_column(index=True)
+    title: Mapped[str] = mapped_column(Text, default="")
+    slug: Mapped[str] = mapped_column(String(255), default="")
+    is_combo: Mapped[bool] = mapped_column(default=False)
+    is_backfill: Mapped[bool] = mapped_column(default=False)
+
+
+class WalletEquitySnapshot(Base):
+    __tablename__ = "wallet_equity_snapshots"
+    __table_args__ = (Index("ix_wallet_equity_wallet_ts", "wallet_id", "observed_at"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    wallet_id: Mapped[int] = mapped_column(ForeignKey("watched_wallets.id"))
+    observed_at: Mapped[datetime]
+    positions_value: Mapped[Decimal | None]
+    cash_balance: Mapped[Decimal | None]
+    coverage: Mapped[str] = mapped_column(String(24))
+    open_positions: Mapped[int | None]
+    realized_pnl: Mapped[Decimal | None]
+    unrealized_pnl: Mapped[Decimal | None]
+    error: Mapped[str | None] = mapped_column(Text)
+
+
+class WalletPosition(Base):
+    """Latest observed position snapshot of a source wallet (replaced on each refresh)."""
+
+    __tablename__ = "wallet_positions"
+    __table_args__ = (UniqueConstraint("wallet_id", "token_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    wallet_id: Mapped[int] = mapped_column(ForeignKey("watched_wallets.id"), index=True)
+    token_id: Mapped[str] = mapped_column(String(100))
+    condition_id: Mapped[str] = mapped_column(String(80))
+    title: Mapped[str] = mapped_column(Text, default="")
+    outcome: Mapped[str] = mapped_column(String(64), default="")
+    size: Mapped[Decimal]
+    avg_price: Mapped[Decimal | None]
+    current_price: Mapped[Decimal | None]
+    current_value: Mapped[Decimal | None]
+    realized_pnl: Mapped[Decimal | None]
+    unrealized_pnl: Mapped[Decimal | None]
+    updated_at: Mapped[datetime]
+
+
+class CopySignal(Base):
+    """Decision record for one source event: sizing inputs, risk reasons, execution outcome."""
+
+    __tablename__ = "copy_signals"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    source_event_id: Mapped[int] = mapped_column(ForeignKey("source_events.id"), unique=True)
+    wallet_id: Mapped[int] = mapped_column(ForeignKey("watched_wallets.id"), index=True)
+    status: Mapped[str] = mapped_column(String(12), default=SignalStatus.PENDING, index=True)
+    side: Mapped[str] = mapped_column(String(4))
+    condition_id: Mapped[str] = mapped_column(String(80))
+    token_id: Mapped[str] = mapped_column(String(100))
+    source_price: Mapped[Decimal]
+    source_shares: Mapped[Decimal]
+    source_cost: Mapped[Decimal]
+    source_equity: Mapped[Decimal | None]
+    source_equity_coverage: Mapped[str | None] = mapped_column(String(24))
+    source_confidence: Mapped[Decimal | None]
+    source_alloc_pct: Mapped[Decimal | None]
+    user_equity: Mapped[Decimal | None]
+    proposed_pct: Mapped[Decimal | None]
+    target_budget: Mapped[Decimal | None]
+    approved_budget: Mapped[Decimal | None]
+    limit_price: Mapped[Decimal | None]
+    target_shares: Mapped[Decimal | None]
+    filled_shares: Mapped[Decimal | None]
+    filled_cost: Mapped[Decimal | None]
+    avg_fill_price: Mapped[Decimal | None]
+    reasons: Mapped[dict[str, Any]]
+    order_id: Mapped[int | None] = mapped_column(ForeignKey("orders.id"))
+    detected_at: Mapped[datetime]
+    decided_at: Mapped[datetime | None]
+    executed_at: Mapped[datetime | None]
+    detection_lag_ms: Mapped[int | None]
+    signal_latency_ms: Mapped[int | None]
+    exec_latency_ms: Mapped[int | None]

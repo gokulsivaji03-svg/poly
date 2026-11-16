@@ -64,6 +64,8 @@ class ExecutionRequest:
     signal_id: int | None = None
     hedge_id: int | None = None
     allow_matched: bool = False
+    lot_ids: tuple[int, ...] | None = None
+    """SELL: restrict to these lots (e.g. only lots copied from one source wallet)."""
     min_order_usd: Decimal = ZERO
 
 
@@ -237,6 +239,7 @@ class PaperExecutionEngine:
                         order=order,
                         fill=fill,
                         allow_matched=req.allow_matched,
+                        lot_ids=req.lot_ids,
                         book_hash=book.hash,
                         book_received_at=book.received_at,
                     )
