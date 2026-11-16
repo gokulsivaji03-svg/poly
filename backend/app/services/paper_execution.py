@@ -67,6 +67,23 @@ class ExecutionRequest:
     lot_ids: tuple[int, ...] | None = None
     """SELL: restrict to these lots (e.g. only lots copied from one source wallet)."""
     min_order_usd: Decimal = ZERO
+    match_allocations: tuple[tuple[int, Decimal], ...] | None = None
+    """Hedge BUY: primary (lot_id, shares) to pair with the delivered shares, in priority."""
+
+
+def _cap_allocations(
+    allocations: tuple[tuple[int, Decimal], ...], delivered: Decimal
+) -> list[tuple[int, Decimal]]:
+    """Trim the planned allocations to the shares actually delivered (partial fills)."""
+    out: list[tuple[int, Decimal]] = []
+    left = delivered
+    for lot_id, shares in allocations:
+        if left <= ZERO:
+            break
+        take = min(shares, left)
+        out.append((lot_id, take))
+        left -= take
+    return out
 
 
 @dataclass(frozen=True, slots=True)
@@ -233,6 +250,14 @@ class PaperExecutionEngine:
                         book_received_at=book.received_at,
                     )
                     lot_id = lot.id
+                    if req.match_allocations:
+                        # Hedge leg: pair the delivered shares with primary lots in the same
+                        # transaction, so a hedge is never booked without its matching.
+                        await self._ledger.match_pairs(
+                            s,
+                            allocations=_cap_allocations(req.match_allocations, fill.net_shares),
+                            hedge_lot_id=lot.id,
+                        )
                 else:
                     closures = await self._ledger.book_sell(
                         s,

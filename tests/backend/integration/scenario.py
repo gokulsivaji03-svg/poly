@@ -38,6 +38,8 @@ class FakeRest:
         self.clock = clock
         self.books: dict[str, tuple[list[tuple[str, str]], list[tuple[str, str]]]] = {}
         self.fail = 0
+        self.script: dict[str, list[tuple[list[tuple[str, str]], list[tuple[str, str]]]]] = {}
+        """Per-token queue of books served on successive fetches (liquidity changes)."""
 
     def set(
         self, token: str, asks: list[tuple[str, str]], bids: list[tuple[str, str]] | None = None
@@ -50,6 +52,8 @@ class FakeRest:
             raise OSError("book endpoint down")
         out = {}
         for t in token_ids:
+            if self.script.get(t):
+                self.books[t] = self.script[t].pop(0)
             if t not in self.books:
                 continue
             asks, bids = self.books[t]
@@ -103,6 +107,7 @@ class World:
         self.positions: dict[str, list[dict[str, Any]]] = {}
         self.activity_errors = 0
         self.fee_rate: str | None = "0"
+        self.resolution: dict[str, str] | None = None
 
     def install(self, router: respx.MockRouter) -> None:
         router.get(f"{DATA}/v2/activity").mock(side_effect=self._activity)
@@ -111,27 +116,7 @@ class World:
         router.get(f"{DATA}/v2/status").mock(
             return_value=httpx.Response(200, json={"data": {"serving": {"lag_seconds": 1}}})
         )
-        router.get(f"{DATA}/v2/tokens").mock(
-            return_value=httpx.Response(
-                200,
-                json={
-                    "data": [
-                        {
-                            "token_id": YES,
-                            "condition_id": COND,
-                            "opposite_token_id": NO,
-                            "resolved": False,
-                        },
-                        {
-                            "token_id": NO,
-                            "condition_id": COND,
-                            "opposite_token_id": YES,
-                            "resolved": False,
-                        },
-                    ]
-                },
-            )
-        )
+        router.get(f"{DATA}/v2/tokens").mock(side_effect=self._tokens)
         router.get(f"{GAMMA}/markets").mock(side_effect=self._gamma)
         router.post(RPC).mock(side_effect=self._rpc)
         router.get("https://geo.test/api/geoblock").mock(
@@ -139,6 +124,20 @@ class World:
                 200, json={"blocked": True, "country": "US", "region": "CA"}
             )
         )
+
+    def _tokens(self, request: httpx.Request) -> httpx.Response:
+        rows = []
+        for token, other in ((YES, NO), (NO, YES)):
+            row: dict[str, Any] = {
+                "token_id": token,
+                "condition_id": COND,
+                "opposite_token_id": other,
+                "resolved": self.resolution is not None,
+            }
+            if self.resolution is not None:
+                row["final_price"] = float(self.resolution[token])
+            rows.append(row)
+        return httpx.Response(200, json={"data": rows})
 
     def _activity(self, request: httpx.Request) -> httpx.Response:
         if self.activity_errors:

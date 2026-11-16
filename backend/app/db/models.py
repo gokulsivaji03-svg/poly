@@ -401,3 +401,34 @@ class CopySignal(Base):
     detection_lag_ms: Mapped[int | None]
     signal_latency_ms: Mapped[int | None]
     exec_latency_ms: Mapped[int | None]
+
+
+# ---------------------------------------------------------------------------- hedges
+class HedgePosition(Base):
+    """Hedge lifecycle for one (account, condition, primary outcome) position."""
+
+    __tablename__ = "hedge_positions"
+    __table_args__ = (UniqueConstraint("account_id", "condition_id", "primary_token_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
+    condition_id: Mapped[str] = mapped_column(String(80))
+    primary_token_id: Mapped[str] = mapped_column(String(100))
+    hedge_token_id: Mapped[str] = mapped_column(String(100), default="")
+    state: Mapped[str] = mapped_column(String(24))
+    last_quote: Mapped[dict[str, Any] | None]
+    last_error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+
+
+class HedgeEvent(Base):
+    __tablename__ = "hedge_events"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    hedge_position_id: Mapped[int] = mapped_column(ForeignKey("hedge_positions.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(32))
+    from_state: Mapped[str | None] = mapped_column(String(24))
+    to_state: Mapped[str | None] = mapped_column(String(24))
+    detail: Mapped[dict[str, Any]]
+    created_at: Mapped[datetime] = mapped_column(index=True)
