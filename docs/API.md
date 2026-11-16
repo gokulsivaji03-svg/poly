@@ -273,3 +273,26 @@ Subsequent messages: `{"type": <topic>, "data": <payload>, "ts": iso}`.
 
 Client may send `{"type":"ping"}`; server replies `{"type":"pong"}`. Clients should reconnect
 with backoff and refetch REST state after reconnect (the snapshot covers the dashboard).
+
+## Historical replay
+
+`POST /replay` → 202 `{id, status:"RUNNING"}`. Body:
+`{start:iso, end:iso, wallet_ids:int[], starting_bankroll:decimal-string,
+detection_delay_s?:int, settings?:partial-StrategySettings}`.
+Timezone-aware window must be positive and at most 31 days; 1–50 wallets;
+delay 0–3600 seconds. 409 if a run is already active in this process.
+
+`GET /replay` → `{runs:ReplayRun[]}`; `GET /replay/{id}` → `ReplayRun`.
+A run has `id,status,params,created_at,finished_at,error,summary`.
+Completed detail includes `equity_curve:[{t,equity}]` and
+`signals:[{t,wallet,side,title,outcome,status,source_price,avg_fill_price,filled_cost,reasons}]`.
+Summary fields: `final_equity,starting_bankroll,return_pct,realized_pnl,unrealized_pnl,
+locked_profit,signals` (status counts), `events_replayed,snapshots_used,ledger_ok`.
+All money values are strings; status is RUNNING, COMPLETED or FAILED.
+Replay uses recorded books **and recorded market metadata**, never current market fallbacks.
+
+### Settings integer exceptions
+
+`max_detection_delay_s`, `max_book_age_s`, `scan_interval_s`,
+`execution_delay_ms` and `extra_slippage_bps` are JSON integers, not decimal strings.
+`hedge.max_hedge_shares` is a positive decimal, not nullable.
