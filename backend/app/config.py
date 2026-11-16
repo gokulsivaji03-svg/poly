@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import secrets
 from enum import StrEnum
 from functools import lru_cache
 
@@ -38,12 +39,15 @@ class Settings(BaseSettings):
     portfolio_snapshot_interval_s: float = Field(default=30.0, gt=0)
     ingest_overlap_s: int = Field(default=180, ge=0)
     """Re-read window behind the high-water mark to catch late-indexed events."""
+    backfill_hours: int = Field(default=48, ge=0, le=24 * 90)
+    """History loaded when a wallet is first added (metrics only; never copied)."""
     http_timeout_s: float = 10.0
     http_max_retries: int = 5
 
     auth_username: str = "admin"
     auth_password: SecretStr = SecretStr("change-me")
-    jwt_secret: SecretStr = SecretStr("dev-insecure-secret-change-me")
+    jwt_secret: SecretStr = Field(default_factory=lambda: SecretStr(secrets.token_urlsafe(48)))
+    """Unset -> random per process (sessions end on restart). Set it in production."""
     jwt_ttl_minutes: int = 12 * 60
     cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
 

@@ -42,6 +42,8 @@ def market(
     fee_rate: str = "0",
     tokens: tuple[str, ...] = (YES, NO),
     closed: bool = False,
+    verified: bool = True,
+    fees_known: bool = True,
 ) -> MarketInfo:
     return MarketInfo(
         condition_id=COND,
@@ -53,6 +55,8 @@ def market(
         neg_risk=neg_risk,
         fee_schedule=FeeSchedule(enabled=fee_rate != "0", rate=D(fee_rate)),
         closed=closed,
+        complement_verified=verified,
+        fees_known=fees_known,
         fetched_at=NOW,
     )
 

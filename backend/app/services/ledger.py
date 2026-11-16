@@ -273,6 +273,33 @@ class PortfolioLedger:
         async with self._sm() as s, s.begin():
             await self.release_in(s, reservation_id)
 
+    async def release_idle(self, account_id: int) -> int:
+        """Release OPEN reservations not backing a PENDING order (emergency stop).
+
+        A signal that reserved but has not inserted its order yet will later fail to book
+        ("reservation is not open"), so releasing early can never cause an overspend.
+        """
+        async with self._sm() as s:
+            ids = list(
+                (
+                    await s.scalars(
+                        select(CashReservation.id).where(
+                            CashReservation.account_id == account_id,
+                            CashReservation.status == ReservationStatus.OPEN,
+                            ~select(Order.id)
+                            .where(
+                                Order.reservation_id == CashReservation.id,
+                                Order.status == "PENDING",
+                            )
+                            .exists(),
+                        )
+                    )
+                ).all()
+            )
+        for rid in ids:
+            await self.release(rid)
+        return len(ids)
+
     async def release_in(self, s: AsyncSession, reservation_id: int) -> Decimal:
         amount = await s.scalar(
             update(CashReservation)
