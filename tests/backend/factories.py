@@ -62,3 +62,27 @@ def fees(rate: str = "0", mode: str = "cash") -> FeeModel:
         schedule=FeeSchedule(enabled=rate != "0", rate=D(rate)),
         buy_fee_mode=mode,  # type: ignore[arg-type]
     )
+
+
+class FakeBooks:
+    """In-memory BookSource. Books are re-stamped with the clock time unless pinned stale."""
+
+    def __init__(self, clock) -> None:
+        self.clock = clock
+        self.books: dict[str, OrderBook] = {}
+        self.pinned: set[str] = set()
+        self.calls = 0
+
+    def set(self, b: OrderBook, *, pin: bool = False) -> None:
+        self.books[b.token_id] = b
+        if pin:
+            self.pinned.add(b.token_id)
+        else:
+            self.pinned.discard(b.token_id)
+
+    async def get_book(self, token_id: str, *, fresh: bool = False) -> OrderBook | None:
+        self.calls += 1
+        b = self.books.get(token_id)
+        if b is None or token_id in self.pinned:
+            return b
+        return b.model_copy(update={"received_at": self.clock.now()})
