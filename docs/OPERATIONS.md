@@ -5,20 +5,20 @@
 Requires Python 3.12+, uv, Node 22+, npm, and PostgreSQL 17. No private key is required.
 
 ```sh
+# One-time database setup; PostgreSQL must already be running:
 createdb polycopy
-createdb polycopy_test
-cd backend
-cp .env.example .env
-uv sync --all-groups
-uv run alembic upgrade head
-uv run uvicorn app.main:app --host 127.0.0.1 --port 8000
-# separate terminal, repository root
-cd frontend
-npm ci
-npm run dev
+createdb polycopy_test # tests only
+# Repository root:
+npm run dev:all
 ```
 
-Open http://localhost:5173. Development login: `admin` / `change-me`. Change the password and set a stable random JWT secret before sharing the application. The API must remain loopback-only without TLS and strong credentials. Environment settings use `POLYCOPY_`; never commit `.env`. A restart invalidates sessions unless a stable secret is configured.
+`dev:all` installs locked frontend/backend dependencies, creates `backend/.env` from its
+example only if absent, applies migrations, then starts FastAPI with reload and Vite.
+Ctrl+C terminates both process trees. If either server exits, the other is stopped.
+Ports 8000 and 5173 must be free. Database availability or migration failures abort startup;
+the launcher does not install or start PostgreSQL.
+
+Open http://127.0.0.1:5173. Development login: `admin` / `change-me`. Change the password and set a stable random JWT secret before sharing the application. The API must remain loopback-only without TLS and strong credentials. Environment settings use `POLYCOPY_`; never commit `.env`. A restart invalidates sessions unless a stable secret is configured.
 
 PostgreSQL is required, not SQLite. Run migrations before starting. Workers use a dedicated PostgreSQL advisory-lock connection; only the elected process runs strategies. Keep one API process for local development. REST and WebSocket requests require authentication (except login, health, readiness). WebSocket tokens are in the URL: configure reverse proxies to omit query strings from access logs.
 

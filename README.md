@@ -22,20 +22,18 @@ retain execution, platform, settlement and operational risk.
 Requires PostgreSQL 17, Python 3.12+, [uv](https://docs.astral.sh/uv/), Node 22+ and npm.
 
 ```sh
+# Once, with PostgreSQL running:
 createdb polycopy
-createdb polycopy_test
-cd backend
-cp .env.example .env
-uv sync --all-groups
-uv run alembic upgrade head
-uv run uvicorn app.main:app --host 127.0.0.1 --port 8000
-# another terminal:
-cd frontend
-npm ci
-npm run dev
+createdb polycopy_test # only needed for tests
+# From the repository root:
+npm run dev:all
 ```
 
-Open http://localhost:5173. Local development login: `admin` / `change-me`.
+The command installs locked dependencies, creates `backend/.env` if missing, runs migrations,
+and starts FastAPI (auto-reload) plus Vite. Ctrl+C stops both. Existing `.env` values are preserved;
+occupied ports or setup failures stop startup rather than selecting a different port.
+
+Open http://127.0.0.1:5173. Local development login: `admin` / `change-me`.
 Change credentials before exposing the server. No private key is needed.
 
 ## Structure
