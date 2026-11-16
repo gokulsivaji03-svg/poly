@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import core, wallets
+from app.api.routes import core, hedges, wallets
 from app.api.ws import WsHub
 from app.api.ws import router as ws_router
 from app.config import Settings, get_settings
@@ -28,6 +28,7 @@ def create_app(
         configure_logging()
         rt = await (runtime_factory or Runtime.create)(cfg)
         hub = WsHub(rt)
+        hub.register_hydrator("hedge", lambda _data: rt.hedger.payload())
         app.state.runtime = rt
         app.state.ws_hub = hub
         hub.start()
@@ -48,6 +49,7 @@ def create_app(
     )
     app.include_router(core.router)
     app.include_router(wallets.router)
+    app.include_router(hedges.router)
     app.include_router(ws_router)
     return app
 
