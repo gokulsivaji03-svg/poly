@@ -40,6 +40,14 @@ class SourcePosition:
 
 
 @dataclass(frozen=True, slots=True)
+class WalletPnl:
+    """Lifetime account P&L from ``/v2/user-pnl`` (includes redeemed/closed positions)."""
+
+    realized: Decimal | None
+    unrealized: Decimal | None
+
+
+@dataclass(frozen=True, slots=True)
 class ActivityBatch:
     rows: list[SourceActivity]
     malformed: int
@@ -123,6 +131,21 @@ class DataApiClient:
         if not isinstance(data, dict):
             return None
         return opt_decimal(data.get("value"))
+
+    async def user_pnl(self, user: str) -> WalletPnl | None:
+        """Latest lifetime P&L point; ``None`` if the wallet has no P&L history.
+
+        ``/v2/positions`` cannot provide this: redeemed winners disappear from it while
+        worthless losers linger as ``REDEEMABLE``, so summing it is biased toward losses.
+        """
+        body = await self._http.get_json(f"{self._base}/v2/user-pnl", {"user": user})
+        points = (body.get("data") or {}).get("points") or []
+        if not points:
+            return None
+        last = max(points, key=lambda p: p.get("timestamp") or 0)
+        return WalletPnl(
+            opt_decimal(last.get("realized_pnl")), opt_decimal(last.get("unrealized_pnl"))
+        )
 
     async def status_lag_seconds(self) -> int | None:
         body = await self._http.get_json(f"{self._base}/v2/status")

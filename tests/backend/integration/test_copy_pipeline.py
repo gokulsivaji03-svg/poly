@@ -7,7 +7,7 @@ from decimal import Decimal
 import pytest
 import respx
 from app.core.clock import ManualClock
-from app.db.models import CopySignal, SignalStatus, SourceEvent
+from app.db.models import CopySignal, SignalStatus, SourceEvent, WalletEquitySnapshot
 from scenario import NO, WALLET_A, WALLET_B, YES, FakeRest, World, activity, make_runtime
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -53,6 +53,31 @@ async def add_and_snapshot(rt, address, *, value="4000", cash=6000, world=None):
 async def signals(rt):
     async with rt.sm() as s:
         return list((await s.scalars(select(CopySignal).order_by(CopySignal.id))).all())
+
+
+async def test_observed_pnl_uses_account_pnl_not_lingering_positions(env, world):
+    """Redeemed winners leave /v2/positions while worthless losers linger as REDEEMABLE."""
+    rt, _, _ = env
+    world.positions[WALLET_A] = [
+        {
+            "token_id": NO,
+            "condition_id": "0xc",
+            "current_size": 1000,
+            "current_price": 0.0,
+            "current_value": 0.0,
+            "realized_pnl": 0.0,
+            "unrealized_pnl": -600.0,
+            "status": "REDEEMABLE",
+        }
+    ]
+    world.pnl[WALLET_A] = ("358273.61", "17777.96")
+    w = await add_and_snapshot(rt, WALLET_A, world=world)
+    async with rt.sm() as s:
+        snap = await s.scalar(
+            select(WalletEquitySnapshot).where(WalletEquitySnapshot.wallet_id == w.id)
+        )
+    assert snap is not None
+    assert (snap.realized_pnl, snap.unrealized_pnl) == (D("358273.61"), D("17777.96"))
 
 
 async def test_proportional_copy_end_to_end(env, world):

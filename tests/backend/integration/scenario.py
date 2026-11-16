@@ -105,6 +105,7 @@ class World:
         self.value: dict[str, str | None] = {}
         self.cash: dict[str, int | None] = {}
         self.positions: dict[str, list[dict[str, Any]]] = {}
+        self.pnl: dict[str, tuple[str, str]] = {}
         self.activity_errors = 0
         self.fee_rate: str | None = "0"
         self.resolution: dict[str, str] | None = None
@@ -113,6 +114,7 @@ class World:
         router.get(f"{DATA}/v2/activity").mock(side_effect=self._activity)
         router.get(f"{DATA}/v2/value").mock(side_effect=self._value)
         router.get(f"{DATA}/v2/positions").mock(side_effect=self._positions)
+        router.get(f"{DATA}/v2/user-pnl").mock(side_effect=self._user_pnl)
         router.get(f"{DATA}/v2/status").mock(
             return_value=httpx.Response(200, json={"data": {"serving": {"lag_seconds": 1}}})
         )
@@ -173,6 +175,21 @@ class World:
                 "pagination": {"has_more": False, "next_cursor": None},
             },
         )
+
+    def _user_pnl(self, request: httpx.Request) -> httpx.Response:
+        user = request.url.params["user"].lower()
+        points = []
+        if user in self.pnl:
+            realized, unrealized = self.pnl[user]
+            points = [
+                {"timestamp": 1, "realized_pnl": -1.0, "unrealized_pnl": 0.0},
+                {
+                    "timestamp": 2,
+                    "realized_pnl": float(realized),
+                    "unrealized_pnl": float(unrealized),
+                },
+            ]
+        return httpx.Response(200, json={"data": {"proxy_wallet": user, "points": points}})
 
     def _gamma(self, request: httpx.Request) -> httpx.Response:
         m: dict[str, Any] = {

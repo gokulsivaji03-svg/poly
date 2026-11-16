@@ -8,7 +8,8 @@ listed here with its source so it can be re-verified when Polymarket changes thi
 | Need | Source | Notes |
 |---|---|---|
 | Wallet activity | `GET https://data-api.polymarket.com/v2/activity?user=` | **v1 is retired** (`/trades` returns `"Data API v1 has been retired"`). Envelope `{data, pagination}`; cursor-only keyset pagination ordered by `(block_timestamp, sequence_id)`; `sort_direction=ASC` supported; `start`/`end` epoch-second window (omitted `start` floors to 3 years back). Types: `TRADE, SPLIT, MERGE, REDEEM, CONVERSION, REWARD, YIELD, MAKER_REBATE, …`. Rows carry `transaction_hash`, `token_id`, `condition_id`, `side`, `size` (shares), `usdc_size`, `price`, `outcome_index` (`999` = unlabelable), `is_combo`. **No per-row event id is exposed.** |
-| Wallet positions | `GET /v2/positions?user=` | `current_size`, `avg_price`, `current_price`, `current_value`, `opposite_token_id`, `negative_risk`, `status` (`OPEN` includes resolved-unredeemed). |
+| Wallet positions | `GET /v2/positions?user=` | `current_size`, `avg_price`, `current_price`, `current_value`, `opposite_token_id`, `negative_risk`, `status` (`OPEN` or `REDEEMABLE`; worthless resolved losers linger as `REDEEMABLE` while redeemed winners disappear, so summing per-position P&L is biased toward losses). |
+| Wallet P&L | `GET /v2/user-pnl?user=` | `{data: {points: [...]}}`; latest point's `realized_pnl` / `unrealized_pnl` are lifetime account totals (`realized_pnl` matches `/v2/leaderboard` `pnl`). Empty `points` = no history. Source of observed wallet P&L. |
 | Portfolio value | `GET /v2/value?user=` | Positions marked to market. Does **not** include free collateral. |
 | Freshness | `GET /v2/status` | `serving.lag_seconds`, ingestion block lag. Used for health/staleness. |
 | Token mapping | `GET /v2/tokens?condition=` (SDK `get_token_references`) | Token → condition, outcome index, `opposite_asset_id`, `neg_risk`, `resolved`, `final_price`. Authoritative complement mapping. |

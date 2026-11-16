@@ -75,6 +75,12 @@ class WalletEquityEstimator:
         except UpstreamError as exc:
             error = str(exc)
         cash = await self._collateral.balance(wallet.address) if error is None else None
+        pnl = None
+        if error is None:
+            try:
+                pnl = await self._data.user_pnl(wallet.address)
+            except UpstreamError as exc:
+                log.info("user pnl unavailable", extra={"error": str(exc)})
         if value is None:
             coverage = EquityCoverage.UNAVAILABLE
         elif cash is None:
@@ -88,12 +94,8 @@ class WalletEquityEstimator:
             cash_balance=cash,
             coverage=coverage.value,
             open_positions=len(positions) if positions is not None else None,
-            realized_pnl=sum((p.realized_pnl or ZERO for p in positions), ZERO)
-            if positions is not None
-            else None,
-            unrealized_pnl=sum((p.unrealized_pnl or ZERO for p in positions), ZERO)
-            if positions is not None
-            else None,
+            realized_pnl=pnl.realized if pnl else None,
+            unrealized_pnl=pnl.unrealized if pnl else None,
             error=error,
         )
         async with self._sm() as s, s.begin():
