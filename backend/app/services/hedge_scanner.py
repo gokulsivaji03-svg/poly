@@ -213,6 +213,8 @@ class HedgeScannerService:
 
     @staticmethod
     def _derive(pos: HedgePosition, event: Ev) -> HedgeState:
+        if pos.state == HedgeState.SETTLED:
+            return HedgeState.SETTLED  # terminal: a late scan event must not reopen it
         mapping = {
             Ev.FILL_RECONCILED_FULL: HedgeState.FULLY_HEDGED,
             Ev.FILL_RECONCILED_PARTIAL: HedgeState.PARTIALLY_HEDGED,

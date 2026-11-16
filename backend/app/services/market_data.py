@@ -57,6 +57,7 @@ class MarketDataService:
         market_ttl: timedelta = timedelta(minutes=5),
         book_ttl: timedelta = timedelta(seconds=5),
         fresh_max_age: timedelta = timedelta(seconds=2),
+        mark_max_age: timedelta = timedelta(minutes=5),
     ) -> None:
         self._meta = meta
         self._rest = rest
@@ -67,6 +68,7 @@ class MarketDataService:
         self._market_ttl = market_ttl
         self._book_ttl = book_ttl
         self._fresh_max_age = fresh_max_age
+        self._mark_max_age = mark_max_age
         self._locks: dict[str, asyncio.Lock] = {}
         self.book_fetch_errors = 0
 
@@ -142,7 +144,8 @@ class MarketDataService:
         out: dict[str, Mark] = {}
         for t in tokens:
             b = self._best_cached(t)
-            if b is None:
+            if b is None or b.age(now) > self._mark_max_age:
+                # A book that stopped updating (e.g. closed market) is unknown, not current.
                 out[t] = Mark(None, "none", None, None)
                 continue
             price, source = b.mark_price()

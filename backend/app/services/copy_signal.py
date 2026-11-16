@@ -6,7 +6,9 @@ records the inputs, every reduction/skip reason, and the actual simulated fill.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -77,6 +79,9 @@ class CopySignalService:
         self._bus = bus
         self._clock = clock
         self.account_id = account_id
+        # Per-condition: count/exposure checks through reservation and fill must not interleave
+        # across wallets, or max_buys_per_market and market caps can be exceeded.
+        self._market_locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
     # --------------------------------------------------------------- portfolio
     async def portfolio(self) -> PortfolioView:
@@ -152,7 +157,8 @@ class CopySignalService:
             return await self._finish(sig, SignalStatus.SKIPPED, [skip])
         try:
             if ev.side == "BUY":
-                return await self._buy(sig, ev, wallet, settings)
+                async with self._market_locks[ev.condition_id]:
+                    return await self._buy(sig, ev, wallet, settings)
             return await self._sell(sig, ev, wallet, settings)
         except Exception as exc:
             log.exception("copy signal failed", extra={"signal_id": sig.id})
@@ -180,6 +186,23 @@ class CopySignalService:
         self, sig: CopySignal, ev: SourceEvent, wallet: WatchedWallet, settings: StrategySettings
     ) -> CopySignal:
         reasons: list[Reason] = []
+        async with self._sm() as s:
+            sold_after = await s.scalar(
+                select(SourceEvent.id).where(
+                    SourceEvent.wallet_id == ev.wallet_id,
+                    SourceEvent.token_id == ev.token_id,
+                    SourceEvent.type == "TRADE",
+                    SourceEvent.side == "SELL",
+                    SourceEvent.block_ts > ev.block_ts,
+                ).limit(1)
+            )
+        if sold_after is not None:
+            # Late-indexed BUY: its later SELL was already handled, so a copy could never exit.
+            return await self._finish(
+                sig,
+                SignalStatus.SKIPPED,
+                [Reason("SOURCE_SOLD_AFTER", "Source already sold this token after this buy.")],
+            )
         market = await self._md.get_market(ev.condition_id)
         if market is None:
             return await self._finish(
