@@ -133,6 +133,9 @@ def main() -> None:
     ap.add_argument("--max-market-pct", type=Decimal, default=ONE,
                     help="cap cost basis per market at this fraction of our equity (1 = off)")
     ap.add_argument("--max-entry-price", type=Decimal, default=ONE)
+    ap.add_argument("--exclude", action="append", default=[],
+                    help="never copy buys in markets whose condition id equals, or whose "
+                    "title contains (case-insensitive), this value; repeatable")
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--cache", type=Path, default=Path.home() / ".cache" / "polycopy-backtest")
     ap.add_argument("--json", type=Path)
@@ -154,6 +157,11 @@ def main() -> None:
         if m and m.settle_at:
             events.append((m.settle_at, 1, "settle", cid))
     events.sort(key=lambda e: (e[0], e[1]))
+    needles = [x.lower() for x in args.exclude]
+    excluded = {
+        cid for cid, m in metas.items()
+        if m and any(n == cid.lower() or n in m.question.lower() for n in needles)
+    }
 
     src = Book()
     src_cash = c0
@@ -206,6 +214,8 @@ def main() -> None:
                     src.shares[tok] += size
                     if m is None or cid in settled:
                         skips["UNMAPPED_OR_SETTLED"] += 1
+                    elif cid in excluded:
+                        skips["EXCLUDED"] += 1
                     elif price > args.max_entry_price:
                         skips["ENTRY_PRICE_TOO_HIGH"] += 1
                     elif src_equity <= ZERO:
