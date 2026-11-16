@@ -5,12 +5,14 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import timedelta
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.config import ExecutionMode, Settings
 from app.core.clock import Clock, SystemClock
+from app.core.money import ZERO
 from app.db.models import AccountMode
 from app.db.session import make_engine, make_sessionmaker
 from app.integrations.http import ResilientHttp
@@ -18,21 +20,38 @@ from app.integrations.polygon import CollateralReader
 from app.integrations.polymarket.clob import ClobRestBooks, MarketStream
 from app.integrations.polymarket.data_api import DataApiClient
 from app.integrations.polymarket.geoblock import GeoblockChecker
+from app.integrations.polymarket.live import (
+    US_VENUE,
+    LiveGate,
+    LiveOrderClient,
+    LiveTradingUnavailable,
+)
 from app.integrations.polymarket.markets import MarketMetadataClient
+from app.services.book_recorder import BookRecorder
 from app.services.copy_signal import CopySignalService
 from app.services.equity_estimator import WalletEquityEstimator
 from app.services.event_bus import EventBus
 from app.services.event_store import TradeEventStore
 from app.services.hedge_scanner import HedgeScannerService
 from app.services.ledger import PortfolioLedger
+from app.services.live_execution import LiveExecutionEngine, sdk_client_factory
 from app.services.market_data import MarketDataService
 from app.services.paper_execution import PaperExecutionEngine
+from app.services.replay import ReplayService
 from app.services.settings_service import SettingsService
 from app.services.system_events import SystemEventLog
 from app.services.wallets import WalletMonitorService, WalletRegistry
 from app.services.workers import Supervisor, periodic
 
 log = logging.getLogger(__name__)
+
+
+async def _live_client(cfg: Settings) -> LiveOrderClient:
+    if cfg.live_private_key is None or not cfg.live_funder_address:
+        raise LiveTradingUnavailable("live credentials not configured")
+    return await sdk_client_factory(
+        cfg.live_private_key.get_secret_value(), cfg.live_funder_address
+    )
 
 
 @dataclass
@@ -56,9 +75,13 @@ class Runtime:
     monitor: WalletMonitorService
     geoblock: GeoblockChecker
     hedger: HedgeScannerService
+    gate: LiveGate
+    recorder: BookRecorder
+    replay: ReplayService
     supervisor: Supervisor
     sdk: Any = None
     data_api_lag_s: int | None = None
+    live_block_reason: str | None = None
 
     @property
     def account_id(self) -> int:
@@ -95,17 +118,27 @@ class Runtime:
             stream = MarketStream(cfg.clob_ws_url, clock)
         market_data = MarketDataService(meta, rest_books, clock, stream)
         ledger = PortfolioLedger(sm, clock)
-        mode = (
-            ExecutionMode.REPLAY
-            if cfg.execution_mode is ExecutionMode.REPLAY
-            else (ExecutionMode.PAPER)
-        )
-        executor = PaperExecutionEngine(sm, ledger, market_data, clock, mode=mode)
+        geoblock = GeoblockChecker(http, cfg.geoblock_url, clock)
+        gate = LiveGate(cfg, geoblock)
         settings = SettingsService(sm)
         strategy = await settings.get()
-        account_id = await ledger.ensure_account(
-            AccountMode(mode.value), strategy.paper.starting_bankroll_usd
-        )
+        executor: PaperExecutionEngine
+        if cfg.execution_mode is ExecutionMode.LIVE:
+            executor = LiveExecutionEngine(
+                sm,
+                ledger,
+                market_data,
+                clock,
+                gate=gate,
+                client_factory=lambda: _live_client(cfg),
+            )
+            # Live cash is synced from the exchange balance before workers start.
+            account_id = await ledger.ensure_account(AccountMode.LIVE, ZERO)
+        else:
+            executor = PaperExecutionEngine(sm, ledger, market_data, clock)
+            account_id = await ledger.ensure_account(
+                AccountMode.PAPER, strategy.paper.starting_bankroll_usd
+            )
         estimator = WalletEquityEstimator(
             sm, data_api, CollateralReader(http, cfg.polygon_rpc_url), clock
         )
@@ -128,7 +161,6 @@ class Runtime:
             overlap_s=cfg.ingest_overlap_s,
             backfill=timedelta(hours=cfg.backfill_hours),
         )
-        geoblock = GeoblockChecker(http, cfg.geoblock_url, clock)
         rt = cls(
             cfg=cfg,
             clock=clock,
@@ -148,9 +180,12 @@ class Runtime:
             copy=copy,
             monitor=monitor,
             geoblock=geoblock,
+            gate=gate,
             hedger=HedgeScannerService(
                 sm, ledger, executor, market_data, settings, events, bus, clock, account_id
             ),
+            recorder=BookRecorder(sm, market_data, clock),
+            replay=ReplayService(engine, sm, market_data, clock),
             supervisor=Supervisor(engine, clock),
             sdk=sdk,
         )
@@ -185,6 +220,12 @@ class Runtime:
             ),
         )
         sup.add("hedge_scanner", self.hedger.run)
+        sup.add(
+            "book_recorder",
+            lambda stop: periodic(
+                stop, 15, self.recorder.tick, on_tick=lambda: sup.heartbeat("book_recorder")
+            ),
+        )
         sup.add(
             "settlement",
             lambda stop: periodic(
@@ -237,10 +278,33 @@ class Runtime:
         await self.geoblock.check()
 
     async def start(self) -> None:
-        if self.cfg.run_workers:
-            await self.supervisor.start()
+        if not self.cfg.run_workers:
+            return
+        if self.cfg.execution_mode is ExecutionMode.LIVE:
+            status = await self.gate.check(fresh=True)
+            if not status.live_enabled:
+                # Restricted or misconfigured: never start trading workers in LIVE mode.
+                self.live_block_reason = status.reason
+                await self.events.record(
+                    "LIVE_TRADING_BLOCKED", status.reason or "blocked", level="ERROR"
+                )
+                return
+            await self._sync_live_balance()
+        await self.supervisor.start()
+
+    async def _sync_live_balance(self) -> None:
+        assert isinstance(self.executor, LiveExecutionEngine)
+        client = await _live_client(self.cfg)
+        info = await client.get_balance_allowance(asset_type="COLLATERAL")  # type: ignore[attr-defined]
+        balance = Decimal(int(info.balance)) / Decimal(10**6)
+        await self.ledger.sync_cash(self.account_id, balance, "Exchange collateral balance sync")
+
+    async def venue_status(self) -> list[dict[str, Any]]:
+        intl = await self.gate.check(fresh=False)
+        return [intl.to_dict(), US_VENUE.to_dict()]
 
     async def stop(self) -> None:
+        await self.replay.wait()
         await self.supervisor.stop()
         await self.http.aclose()
         if self.sdk is not None:

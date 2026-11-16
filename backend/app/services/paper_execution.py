@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Protocol
 
@@ -102,6 +102,16 @@ class ExecutionResult:
         return self.status in (OrderStatus.FILLED, OrderStatus.PARTIALLY_FILLED)
 
 
+@dataclass(frozen=True, slots=True)
+class ObtainedFill:
+    """What an execution venue (simulated or real) delivered for one order."""
+
+    fill: FillSimulation
+    book_hash: str | None
+    book_received_at: datetime | None
+    book_age_ms: int | None
+
+
 def apply_slippage(book: OrderBook, bps: int) -> OrderBook:
     """Adverse-shift every level by ``bps`` basis points (asks up, bids down)."""
     if bps == 0:
@@ -127,7 +137,7 @@ class PaperExecutionEngine:
         *,
         mode: ExecutionMode = ExecutionMode.PAPER,
     ) -> None:
-        if mode is ExecutionMode.LIVE:
+        if mode is ExecutionMode.LIVE and type(self) is PaperExecutionEngine:
             raise ValueError("PaperExecutionEngine never runs in LIVE mode")
         self._sm = sm
         self._ledger = ledger
@@ -183,19 +193,82 @@ class PaperExecutionEngine:
             await s.flush()
             order_id = order.id
 
+        obtained = await self._obtain_fill(req, delay_ms, slippage_bps, share_step)
+        if isinstance(obtained, str):
+            return await self._reject(order_id, req, obtained)
+        fill = obtained.fill
+        status = self._fill_status(req, fill, share_step)
+        latency_ms = int((self._clock.now() - started).total_seconds() * 1000)
+        try:
+            async with self._sm() as s, s.begin():
+                order = await s.get(Order, order_id, with_for_update=True)
+                assert order is not None
+                lot_id: int | None = None
+                closures: list[LotClosure] = []
+                if req.side is Side.BUY:
+                    lot: Lot = await self._ledger.book_buy(
+                        s,
+                        order=order,
+                        fill=fill,
+                        origin=req.origin,
+                        outcome=req.outcome,
+                        question=req.question,
+                        source_wallet=req.source_wallet,
+                        book_hash=obtained.book_hash,
+                        book_received_at=obtained.book_received_at,
+                    )
+                    lot_id = lot.id
+                    if req.match_allocations:
+                        # Hedge leg: pair the delivered shares with primary lots in the same
+                        # transaction, so a hedge is never booked without its matching.
+                        await self._ledger.match_pairs(
+                            s,
+                            allocations=_cap_allocations(req.match_allocations, fill.net_shares),
+                            hedge_lot_id=lot.id,
+                        )
+                else:
+                    closures = await self._ledger.book_sell(
+                        s,
+                        order=order,
+                        fill=fill,
+                        allow_matched=req.allow_matched,
+                        lot_ids=req.lot_ids,
+                        book_hash=obtained.book_hash,
+                        book_received_at=obtained.book_received_at,
+                    )
+                order.status = status
+                order.completed_at = self._clock.now()
+                order.exec_latency_ms = latency_ms
+                order.book_age_ms = obtained.book_age_ms
+                if status is OrderStatus.PARTIALLY_FILLED:
+                    order.reason = "Remainder cancelled (insufficient depth within limit)"
+        except LedgerError as exc:
+            log.warning("ledger rejected fill", extra={"order_id": order_id, "error": str(exc)})
+            return await self._reject(order_id, req, f"LEDGER: {exc}", failed=True)
+        return ExecutionResult(
+            order_id=order_id,
+            status=status,
+            fill=fill,
+            lot_id=lot_id,
+            closure_ids=tuple(c.id for c in closures),
+            reason=None if status is OrderStatus.FILLED else "PARTIAL_FILL",
+        )
+
+    async def _obtain_fill(
+        self, req: ExecutionRequest, delay_ms: int, slippage_bps: int, share_step: Decimal
+    ) -> ObtainedFill | str:
+        """Paper: walk a fresh order book. Returns a rejection reason string on failure."""
         if delay_ms:
             await self._clock.sleep(delay_ms / 1000)
-
         book = await self._books.get_book(req.token_id, fresh=True)
         now = self._clock.now()
         if book is None:
-            return await self._reject(order_id, req, "NO_BOOK")
+            return "NO_BOOK"
         if book.is_stale(now, req.max_book_age):
-            return await self._reject(order_id, req, "STALE_BOOK")
+            return "STALE_BOOK"
         if book.token_id != req.token_id:
-            return await self._reject(order_id, req, "BOOK_TOKEN_MISMATCH")
+            return "BOOK_TOKEN_MISMATCH"
         walked = apply_slippage(book, slippage_bps)
-
         if req.side is Side.BUY:
             budget = req.budget
             if req.reservation_id is not None:
@@ -220,70 +293,13 @@ class PaperExecutionEngine:
                 share_step=share_step,
             )
         if not fill.filled:
-            return await self._reject(order_id, req, fill.reasons[0] if fill.reasons else "NO_FILL")
+            return fill.reasons[0] if fill.reasons else "NO_FILL"
         if fill.gross_shares < book.min_order_size:
-            return await self._reject(
-                order_id, req, f"BELOW_MIN_ORDER_SIZE {fill.gross_shares} < {book.min_order_size}"
-            )
+            return f"BELOW_MIN_ORDER_SIZE {fill.gross_shares} < {book.min_order_size}"
         if fill.notional < req.min_order_usd:
-            return await self._reject(order_id, req, f"BELOW_MIN_ORDER_USD {fill.notional:.2f}")
-
-        status = self._fill_status(req, fill, share_step)
-        latency_ms = int((self._clock.now() - started).total_seconds() * 1000)
-        book_age_ms = int(book.age(now).total_seconds() * 1000)
-        try:
-            async with self._sm() as s, s.begin():
-                order = await s.get(Order, order_id, with_for_update=True)
-                assert order is not None
-                lot_id: int | None = None
-                closures: list[LotClosure] = []
-                if req.side is Side.BUY:
-                    lot: Lot = await self._ledger.book_buy(
-                        s,
-                        order=order,
-                        fill=fill,
-                        origin=req.origin,
-                        outcome=req.outcome,
-                        question=req.question,
-                        source_wallet=req.source_wallet,
-                        book_hash=book.hash,
-                        book_received_at=book.received_at,
-                    )
-                    lot_id = lot.id
-                    if req.match_allocations:
-                        # Hedge leg: pair the delivered shares with primary lots in the same
-                        # transaction, so a hedge is never booked without its matching.
-                        await self._ledger.match_pairs(
-                            s,
-                            allocations=_cap_allocations(req.match_allocations, fill.net_shares),
-                            hedge_lot_id=lot.id,
-                        )
-                else:
-                    closures = await self._ledger.book_sell(
-                        s,
-                        order=order,
-                        fill=fill,
-                        allow_matched=req.allow_matched,
-                        lot_ids=req.lot_ids,
-                        book_hash=book.hash,
-                        book_received_at=book.received_at,
-                    )
-                order.status = status
-                order.completed_at = self._clock.now()
-                order.exec_latency_ms = latency_ms
-                order.book_age_ms = book_age_ms
-                if status is OrderStatus.PARTIALLY_FILLED:
-                    order.reason = "Remainder cancelled (insufficient depth within limit)"
-        except LedgerError as exc:
-            log.warning("ledger rejected fill", extra={"order_id": order_id, "error": str(exc)})
-            return await self._reject(order_id, req, f"LEDGER: {exc}", failed=True)
-        return ExecutionResult(
-            order_id=order_id,
-            status=status,
-            fill=fill,
-            lot_id=lot_id,
-            closure_ids=tuple(c.id for c in closures),
-            reason=None if status is OrderStatus.FILLED else "PARTIAL_FILL",
+            return f"BELOW_MIN_ORDER_USD {fill.notional:.2f}"
+        return ObtainedFill(
+            fill, book.hash, book.received_at, int(book.age(now).total_seconds() * 1000)
         )
 
     @staticmethod

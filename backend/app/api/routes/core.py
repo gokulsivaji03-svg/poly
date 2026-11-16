@@ -193,10 +193,10 @@ async def reset_paper(body: ResetIn, request: Request, _: User) -> dict[str, Any
 async def system_health(request: Request, _: User) -> dict[str, Any]:
     rt = rt_of(request)
     problems = await rt.ledger.verify(rt.account_id)
-    venues = getattr(rt, "venue_status", None)
     return {
         "mode": rt.cfg.execution_mode.value,
-        "venues": await venues() if venues else [],
+        "live_block_reason": rt.live_block_reason,
+        "venues": await rt.venue_status(),
         "workers": q.worker_status(rt),
         "metrics": await q.system_metrics(rt),
         "ledger_ok": not problems,
