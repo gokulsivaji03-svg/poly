@@ -33,7 +33,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import random
 import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -195,7 +194,9 @@ def run_market(
     sells: list[dict[str, Any]],
     args: argparse.Namespace,
 ) -> tuple[list[LotResult], Counter[str]]:
-    start = min(int(b["timestamp"]) for b in buys)
+    # Start early enough that the last price before the first buy (<= max age) is visible;
+    # _price_at still never looks past the decision time.
+    start = min(int(b["timestamp"]) for b in buys) - args.max_price_age
     tokens = {b["token_id"] for b in buys} | {m.opposite[b["token_id"]] for b in buys}
     series = {tok: api.history(tok, start, m.closed_at + 3600) for tok in tokens}
     skips: Counter[str] = Counter()
@@ -224,6 +225,9 @@ def run_market(
             entry = src_price
         cost_ps = entry + m.fees.fee_usdc(ONE, entry)
         shares = to_decimal(b["size"]) * args.scale
+        if shares * cost_ps < args.min_order_usd:
+            skips["BELOW_MIN_ORDER"] += 1
+            continue
         if args.max_market_usd:
             shares = min(shares, (args.max_market_usd - spent) / cost_ps)
             if shares * cost_ps < args.min_order_usd:
@@ -383,8 +387,9 @@ def main() -> None:
     elif args.rank == "count":
         ranked = sorted(by_market, key=lambda c: -len(by_market[c]))
     elif args.rank == "random":
-        ranked = sorted(by_market)
-        random.Random(args.seed).shuffle(ranked)  # noqa: S311 - reproducible sample, not crypto
+        # Rank by a seeded hash per market: stable as the wallet adds new markets, unlike a
+        # shuffle of the whole (growing) list.
+        ranked = sorted(by_market, key=lambda c: sha256(f"{args.seed}:{c}".encode()).hexdigest())
     else:
         ranked = sorted(by_market, key=lambda c: -sum(float(r["usdc_size"]) for r in by_market[c]))
 
