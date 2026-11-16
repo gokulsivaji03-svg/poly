@@ -1,0 +1,9 @@
+{
+  "name": "polycopy",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "dev:all": "node scripts/dev.mjs"
+  }
+}
