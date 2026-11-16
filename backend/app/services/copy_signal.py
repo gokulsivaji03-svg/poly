@@ -11,7 +11,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -21,6 +21,7 @@ from app.db.models import (
     CopySignal,
     Lot,
     LotOrigin,
+    Order,
     OrderKind,
     OrderStatus,
     SignalStatus,
@@ -231,6 +232,15 @@ class CopySignalService:
                 **common,
             )
         book = await self._md.get_book(ev.token_id)
+        async with self._sm() as s:
+            buys_in_market = await s.scalar(
+                select(func.count(Order.id)).where(
+                    Order.account_id == self.account_id,
+                    Order.kind == OrderKind.COPY_BUY,
+                    Order.condition_id == ev.condition_id,
+                    Order.status.in_([OrderStatus.FILLED, OrderStatus.PARTIALLY_FILLED]),
+                )
+            )
         decision = evaluate_buy(
             budget=sizing.target_budget,
             token_id=ev.token_id,
@@ -242,6 +252,7 @@ class CopySignalService:
             portfolio=view.risk_snapshot(day_pnl),
             settings=settings.risk,
             trading_halted=settings.trading_halted,
+            buys_in_market=buys_in_market or 0,
         )
         reasons.extend(decision.reasons)
         common.update(approved_budget=decision.approved_budget, limit_price=decision.limit_price)

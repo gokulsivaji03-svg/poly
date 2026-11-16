@@ -31,6 +31,8 @@ const SETTINGS: StrategySettings = {
     daily_loss_limit_usd: '100',
     max_book_age_s: 10,
     min_order_usd: '1',
+    max_entry_price: '0.9',
+    max_buys_per_market: 10,
   },
   copy: { enabled: true, sell_policy: 'PROPORTIONAL', hedged_sell_policy: 'PRESERVE_HEDGE', copy_sells: true },
   hedge: {

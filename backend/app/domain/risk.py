@@ -68,10 +68,25 @@ def evaluate_buy(
     portfolio: PortfolioSnapshot,
     settings: RiskSettings,
     trading_halted: bool,
+    buys_in_market: int,
 ) -> RiskDecision:
+    """``buys_in_market``: filled copy buys already made in ``condition_id``."""
     reasons: list[Reason] = []
     if trading_halted:
         return _reject(reasons, "TRADING_HALTED", "Strategies are paused or emergency-stopped.")
+    if source_price > settings.max_entry_price:
+        return _reject(
+            reasons,
+            "ENTRY_PRICE_TOO_HIGH",
+            f"Source price {source_price} above max entry {settings.max_entry_price}.",
+        )
+    if buys_in_market >= settings.max_buys_per_market:
+        return _reject(
+            reasons,
+            "MAX_BUYS_PER_MARKET",
+            f"Already copied {buys_in_market} buys in this market "
+            f"(max {settings.max_buys_per_market}).",
+        )
 
     delay = now - source_ts
     if delay > timedelta(seconds=settings.max_detection_delay_s):
@@ -132,7 +147,7 @@ def evaluate_buy(
 
     limit_by_source = source_price * (ONE + settings.max_price_diff_pct)
     limit_by_slip = book.best_ask * (ONE + settings.max_slippage_pct)
-    limit_price = min(limit_by_source, limit_by_slip, MAX_PRICE)
+    limit_price = min(limit_by_source, limit_by_slip, settings.max_entry_price, MAX_PRICE)
     if book.best_ask > limit_price:
         return _reject(
             reasons,

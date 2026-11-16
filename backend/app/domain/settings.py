@@ -85,6 +85,10 @@ class RiskSettings(Model):
     daily_loss_limit_usd: Dec = Field(default=Decimal("50"), gt=0)
     max_book_age_s: int = Field(default=15, gt=0)
     min_order_usd: Dec = Field(default=Decimal("1"), ge=0)
+    max_entry_price: Dec = Field(default=Decimal("0.90"), gt=0, le=1)
+    """Skip source BUYs priced above this; little upside is left near certainty."""
+    max_buys_per_market: int = Field(default=10, gt=0)
+    """Max filled copy buys per condition; stops averaging into a losing position."""
 
 
 class CopySettings(Model):

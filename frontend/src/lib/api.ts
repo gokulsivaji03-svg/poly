@@ -427,6 +427,8 @@ export interface RiskSettings {
   daily_loss_limit_usd: Decimal
   max_book_age_s: number
   min_order_usd: Decimal
+  max_entry_price: Decimal
+  max_buys_per_market: number
 }
 
 export interface CopySettings {

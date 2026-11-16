@@ -79,6 +79,8 @@ export const RISK_FIELDS: FieldDef[] = [
   { section: 'risk', key: 'daily_loss_limit_usd', label: 'Daily loss limit', kind: 'usd', positive: true },
   { section: 'risk', key: 'max_book_age_s', label: 'Max book age', kind: 'int', positive: true, suffix: 's' },
   { section: 'risk', key: 'min_order_usd', label: 'Min order size', kind: 'usd' },
+  { section: 'risk', key: 'max_entry_price', label: 'Max entry price', kind: 'cents', positive: true, max: '100', help: 'Skip source buys priced above this' },
+  { section: 'risk', key: 'max_buys_per_market', label: 'Max buys per market', kind: 'int', positive: true, help: 'Filled copy buys per condition; stops averaging down' },
 ]
 
 export const COPY_FIELDS: FieldDef[] = [

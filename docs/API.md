@@ -208,7 +208,8 @@ HedgeOpportunity = {
   "risk": {"max_pct_per_trade", "max_position_usd", "max_market_exposure_usd",
            "max_total_exposure_pct", "min_liquidity_usd", "max_price_diff_pct",
            "max_slippage_pct", "max_detection_delay_s", "min_cash_reserve_usd",
-           "daily_loss_limit_usd", "max_book_age_s", "min_order_usd"},
+           "daily_loss_limit_usd", "max_book_age_s", "min_order_usd",
+           "max_entry_price", "max_buys_per_market"},
   "copy": {"enabled", "sell_policy": "PROPORTIONAL"|"FULL_EXIT"|"IGNORE",
            "hedged_sell_policy": "PRESERVE_HEDGE"|"UNWIND_IF_BETTER", "copy_sells"},
   "hedge": {"enabled", "mode": "ALERT_ONLY"|"AUTO_PAPER", "min_net_gap_per_share",
@@ -293,6 +294,6 @@ Replay uses recorded books **and recorded market metadata**, never current marke
 
 ### Settings integer exceptions
 
-`max_detection_delay_s`, `max_book_age_s`, `scan_interval_s`,
+`max_detection_delay_s`, `max_book_age_s`, `max_buys_per_market`, `scan_interval_s`,
 `execution_delay_ms` and `extra_slippage_bps` are JSON integers, not decimal strings.
 `hedge.max_hedge_shares` is a positive decimal, not nullable.
