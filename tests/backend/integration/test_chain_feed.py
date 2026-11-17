@@ -218,3 +218,41 @@ async def test_push_does_not_wait_for_copy_and_keeps_wallet_order(env, monkeypat
     release.set()
     await rt.feed.drain()
     assert started == ["0xa1", "0xb1", "0xa2"]
+
+
+def pending_match(wallet, *, tx, usdc="200", shares="500", token=YES):
+    """A pending operator matchOrders in which ``wallet``'s BUY is the taker order."""
+    from app.integrations.polygon import _MATCH_ARGS, MATCH_ORDERS
+    from eth_abi import encode
+
+    amount, got = int(D(usdc) * 10**6), int(D(shares) * 10**6)
+    order = (1, wallet, wallet, int(token), amount, got, 0, 0, 0, b"\0" * 32, b"\0" * 32, b"")
+    calldata = encode(_MATCH_ARGS, [b"\0" * 32, order, [], amount, [], 0, []])
+    return {"hash": tx, "to": "0xe111180000d2663c0091e4f400237545b87b996b",
+            "input": MATCH_ORDERS + calldata.hex()}
+
+
+async def test_pending_fill_is_copied_and_its_confirmed_log_is_not(env):
+    rt, clock, world, _w, _rest = env
+    await rt.feed.tick()
+    assert await rt.feed.handle_pending(pending_match(WALLET_A, tx="0xp1")) == 1
+    await rt.feed.drain()
+    [ev] = await rows(rt, SourceEvent)
+    [sig] = await rows(rt, CopySignal)
+    assert ev.source == "mempool" and (ev.size, ev.price) == (D("500"), D("0.4"))
+    assert sig.status == SignalStatus.EXECUTED
+    block = world.head + 1
+    await rt.feed.handle_message(
+        pushed({"number": hex(block), "timestamp": hex(int(clock.now().timestamp()))})
+    )
+    confirmed = fill_log(WALLET_A, block=block, tx="0xp1")
+    assert await rt.feed.handle_message(pushed(confirmed)) == 0
+    await rt.feed.drain()
+    assert len(await rows(rt, CopySignal)) == 1
+
+
+async def test_pending_fills_of_unfollowed_wallets_are_ignored(env):
+    rt, _clock, _world, _w, _rest = env
+    await rt.feed.tick()
+    assert await rt.feed.handle_pending(pending_match("0x" + "99" * 20, tx="0xp2")) == 0
+    assert await rows(rt, SourceEvent) == []

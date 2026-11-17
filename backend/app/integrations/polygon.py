@@ -7,6 +7,9 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 
+from eth_abi.abi import decode as abi_decode
+from eth_abi.exceptions import DecodingError
+
 from app.domain.market import Side
 from app.integrations.http import ResilientHttp, UpstreamError
 
@@ -32,8 +35,10 @@ FILL_TOPIC = "0xd543adfd945773f1a62f74f0ee55a5e3b9b1a28262980ba90b1a89f2ea84d8ee
 @dataclass(frozen=True, slots=True)
 class ChainFill:
     tx_hash: str
-    log_index: int
-    block_number: int
+    log_index: int | None
+    """``None`` for a fill decoded from a pending transaction."""
+    block_number: int | None
+    """``None`` while the transaction is still in the mempool."""
     maker: str
     side: Side
     token_id: str
@@ -72,6 +77,57 @@ def decode_fill(entry: dict[str, Any]) -> ChainFill | None:
         shares=shares,
         usdc=usdc,
     )
+
+
+MATCH_ORDERS = "0x3c2b4399"
+"""Operator-only ``matchOrders`` on the CLOB V2 exchanges (selector verified against
+4byte.directory and against confirmed ``OrderFilled`` logs, see scripts/mempool_probe.py)."""
+_ORDER = (
+    "(uint256,address,address,uint256,uint256,uint256,uint8,uint8,uint256,bytes32,bytes32,bytes)"
+)
+_MATCH_ARGS = ["bytes32", _ORDER, f"{_ORDER}[]", "uint256", "uint256[]", "uint256", "uint256[]"]
+
+
+def decode_pending_fills(tx: dict[str, Any]) -> list[ChainFill]:
+    """Every order filled by a pending ``matchOrders`` transaction, taker first.
+
+    The maker-asset amount filled is exact (it equals the confirmed log's
+    ``makerAmountFilled``). The other leg is priced at the order's limit ratio, which for a
+    taker can be worse than its eventual fill. Anything else decodes to ``[]``.
+    """
+    if (tx.get("to") or "").lower() not in EXCHANGES:
+        return []
+    calldata = str(tx.get("input") or "")
+    if not calldata.startswith(MATCH_ORDERS):
+        return []
+    try:
+        _, taker, makers, taker_fill, maker_fills, _, _ = abi_decode(
+            _MATCH_ARGS, bytes.fromhex(calldata[10:])
+        )
+    except (ValueError, DecodingError):
+        return []
+    out: list[ChainFill] = []
+    for order, filled in [(taker, taker_fill), *zip(makers, maker_fills, strict=False)]:
+        side = {0: Side.BUY, 1: Side.SELL}.get(order[6])
+        maker_amount, taker_amount = int(order[4]), int(order[5])
+        if side is None or filled <= 0 or maker_amount <= 0 or taker_amount <= 0:
+            continue
+        given = Decimal(filled) / DECIMALS
+        got = Decimal(filled) * taker_amount / maker_amount / DECIMALS
+        usdc, shares = (given, got) if side is Side.BUY else (got, given)
+        out.append(
+            ChainFill(
+                tx_hash=str(tx["hash"]).lower(),
+                log_index=None,
+                block_number=None,
+                maker=str(order[1]).lower(),
+                side=side,
+                token_id=str(order[3]),
+                shares=shares,
+                usdc=usdc,
+            )
+        )
+    return out
 
 
 def _topic(address: str) -> str:

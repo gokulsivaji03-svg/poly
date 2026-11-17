@@ -44,7 +44,7 @@ async def report(hours: float, source: str | None) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--hours", type=float, default=24)
-    parser.add_argument("--source", choices=["chain", "api"])
+    parser.add_argument("--source", choices=["chain", "mempool", "api"])
     args = parser.parse_args()
     print(asyncio.run(report(args.hours, args.source)))
 
