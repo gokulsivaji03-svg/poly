@@ -62,5 +62,8 @@ def test_equity_walks_back_from_one_observation_along_the_pnl():
     path = equity_path(D("10000"), NOW + timedelta(hours=2), pnl, NOW, NOW + timedelta(hours=2))
     assert path == [(NOW, D("5000")), (NOW + timedelta(hours=1), D("8000"))]
     broke = equity_path(D("4000"), NOW + timedelta(hours=2), pnl, NOW, NOW + timedelta(hours=2))
-    assert broke == [(NOW + timedelta(hours=1), D("2000"))], "a non-positive equity is dropped"
+    assert broke == [
+        (NOW, D("2000")),
+        (NOW + timedelta(hours=1), D("2000")),
+    ], "a walk-back below zero holds the nearest later equity instead of leaving a gap"
     assert equity_path(D("1"), NOW - timedelta(hours=1), pnl, NOW, NOW) == [], "no P&L at anchor"

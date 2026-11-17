@@ -94,14 +94,22 @@ def equity_path(
     until: datetime,
 ) -> list[Bar]:
     """A wallet's equity at each P&L point in ``[start, until)``, walked back from one
-    observation: equity(t) = anchor - (P&L at anchor - P&L at t). Assumes no deposits or
-    withdrawals in between; points that would leave the wallet broke are dropped."""
+    observation: equity(t) = anchor - (P&L at anchor - P&L at t).
+
+    That assumes no deposits or withdrawals in between. Where it would leave the wallet
+    broke, a withdrawal the P&L cannot show happened later, so the nearest later equity is
+    held instead of leaving a gap that would decay confidence to nothing."""
     i = bisect.bisect_right(pnl, anchor_at, key=lambda b: b[0])
     if i == 0:
         return []
     at_anchor = pnl[i - 1][1]
-    path = [(t, anchor_equity - (at_anchor - v)) for t, v in pnl if start <= t < until]
-    return [(t, e) for t, e in path if e > 0]
+    held = anchor_equity
+    path: list[Bar] = []
+    for t, v in reversed([b for b in pnl if start <= b[0] < until]):
+        walked = anchor_equity - (at_anchor - v)
+        held = walked if walked > 0 else held
+        path.append((t, held))
+    return path[::-1]
 
 
 class HistoryClient:
