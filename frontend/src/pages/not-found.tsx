@@ -1,4 +1,3 @@
-import { Compass } from 'lucide-react'
 import { Link } from 'react-router'
 import { Panel } from '@/components/common/panel'
 import { EmptyState } from '@/components/common/states'
@@ -8,7 +7,6 @@ export function NotFoundPage() {
   return (
     <Panel>
       <EmptyState
-        icon={Compass}
         title="Page not found"
         description="This route does not exist."
         action={

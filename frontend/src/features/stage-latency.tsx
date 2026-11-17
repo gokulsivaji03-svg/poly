@@ -36,7 +36,7 @@ export function StageLatency({ stages }: { stages: CopyStage[] }) {
             ))}
             {total ? (
               <tr className="border-t font-medium [&>td]:px-3 [&>td]:py-1.5">
-                <td className="num">receipt to booked</td>
+                <td className="num" title="Fill receipt to order booked">total</td>
                 <td />
                 <td className="text-right"><Num value={total.p50_ms} kind="ms" /></td>
                 <td className="text-right"><Num value={total.p99_ms} kind="ms" /></td>

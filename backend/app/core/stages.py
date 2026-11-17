@@ -66,25 +66,32 @@ def percentiles(values: list[float]) -> Percentiles:
     return Percentiles(len(values), q[49], q[89], q[98], values[-1])
 
 
-def summarize(rows: Iterable[Mapping[str, int]]) -> dict[str, Percentiles]:
-    """Percentiles (µs) of each stage's own duration and of the whole path.
+def spans(row: Mapping[str, int]) -> dict[str, int]:
+    """Each stage's own duration (µs) in one copy, plus ``total`` for the whole path.
 
-    A stage's duration is its mark minus the latest earlier mark present in the same row,
-    so rows that stop early (a rejected signal never reserves) still count where they ran.
+    A stage's duration is its mark minus the latest earlier mark present in the row, so a
+    copy that stops early (a rejected signal never reserves) still counts where it ran.
     """
-    order = [s.value for s in Stage]
-    spans: dict[str, list[float]] = {}
+    out: dict[str, int] = {}
+    previous = 0
+    for stage in list(Stage)[1:]:
+        at = row.get(stage.value)
+        if at is None:
+            continue
+        out[stage.value] = at - previous
+        previous = at
+    if previous:
+        out["total"] = previous
+    return out
+
+
+def summarize(rows: Iterable[Mapping[str, int]]) -> dict[str, Percentiles]:
+    """Percentiles (µs) of each stage's own duration and of the whole path."""
+    grouped: dict[str, list[float]] = {}
     for row in rows:
-        previous = 0
-        for name in order[1:]:
-            at = row.get(name)
-            if at is None:
-                continue
-            spans.setdefault(name, []).append(at - previous)
-            previous = at
-        if previous:
-            spans.setdefault("total", []).append(previous)
-    return {name: percentiles(v) for name, v in spans.items()}
+        for name, us in spans(row).items():
+            grouped.setdefault(name, []).append(us)
+    return {name: percentiles(v) for name, v in grouped.items()}
 
 
 def render(summary: Mapping[str, Percentiles]) -> str:

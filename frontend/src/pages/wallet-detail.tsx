@@ -1,5 +1,5 @@
 import type { ColumnDef } from '@tanstack/react-table'
-import { ArrowLeft, BarChart3, Info, LineChart } from 'lucide-react'
+import { ArrowLeft, Info } from 'lucide-react'
 import { useMemo } from 'react'
 import { Link, useParams } from 'react-router'
 import { AddressChip } from '@/components/common/address'
@@ -232,7 +232,7 @@ function Charts({ w }: { w: WalletDetail }) {
           {hasEquity ? (
             <TimeSeriesChart series={equitySeries} height={224} testId="wallet-equity-chart" />
           ) : (
-            <EmptyState icon={LineChart} title="No equity snapshots yet" description="Snapshots are taken by the wallet observer." />
+            <EmptyState title="No equity snapshots yet" description="Snapshots are taken by the wallet observer." />
           )}
         </div>
       </Panel>
@@ -253,7 +253,7 @@ function Charts({ w }: { w: WalletDetail }) {
           {hasAlloc ? (
             <TimeSeriesChart series={allocSeries} format="pct" height={224} testId="wallet-allocation-chart" />
           ) : (
-            <EmptyState icon={BarChart3} title="No allocation history" description="Each source trade with a known equity contributes a bar." />
+            <EmptyState title="No allocation history" description="Each source trade with a known equity contributes a bar." />
           )}
         </div>
       </Panel>

@@ -18,7 +18,7 @@ describe('StageLatency', () => {
       'taped1.41 ms3.60 ms',
       'decided0.02 ms0.04 ms',
       'executed3.52 ms9.10 ms',
-      'receipt to booked9.90 ms23 ms',
+      'total9.90 ms23 ms',
     ])
     expect(screen.getByText('last 200 copies')).toBeInTheDocument()
   })

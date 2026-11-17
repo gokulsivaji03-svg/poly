@@ -318,6 +318,10 @@ export interface CopySignal {
   filled_cost: Decimal | null
   avg_fill_price: Decimal | null
   price_diff_bps: Decimal | null
+  /** Price per share paid beyond the source's fill (negative: better than the source). */
+  premium: Decimal | null
+  /** Each pipeline stage's own duration in this copy, plus `total`. */
+  stages_ms: Record<string, number> | null
   reasons: Reason[]
   detected_at: Iso | null
   decided_at: Iso | null
@@ -326,6 +330,21 @@ export interface CopySignal {
   signal_latency_ms: number | null
   exec_latency_ms: number | null
   order_id: number | string | null
+}
+
+export interface CopyQuality {
+  hours: number
+  signals: number
+  filled: number
+  skipped: number
+  failed: number
+  premium_p50: Decimal | null
+  premium_p90: Decimal | null
+  /** Share of fills at or better than the source's price, 0 to 1. */
+  at_source_share: Decimal | null
+  detect_to_fill_ms_p50: number | null
+  detect_to_fill_ms_p99: number | null
+  skip_reasons: { code: string; n: number }[]
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -721,6 +740,7 @@ export const api = {
   sourceTrades: (limit = 50, walletId?: string | number) =>
     request<{ trades: SourceTrade[] }>('GET', `/source-trades${qs({ limit, wallet_id: walletId })}`),
   copySignals: (limit = 50) => request<{ signals: CopySignal[] }>('GET', `/copy-signals${qs({ limit })}`),
+  copyQuality: (hours = 24) => request<CopyQuality>('GET', `/copy-quality${qs({ hours })}`),
 
   hedgeOpportunities: () => request<HedgeOpportunities>('GET', '/hedges/opportunities'),
   /** Opportunity ids are "<condition_id>:<primary_token_id>" — always URL-encoded. */

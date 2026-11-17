@@ -1,4 +1,3 @@
-import { LineChart } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { Panel } from '@/components/common/panel'
 import { SegmentedControl } from '@/components/common/segmented'
@@ -38,19 +37,18 @@ export function EquityChartPanel({ className }: { className?: string }) {
       className={className}
       actions={<SegmentedControl options={RANGES} value={range} onChange={setRange} label="Equity range" />}
     >
-      <div data-testid="equity-chart" className="relative h-[260px] p-2">
+      <div data-testid="equity-chart" className="relative h-[220px] p-2">
         {q.isPending ? (
           <Skeleton className="h-full w-full" />
         ) : q.isError && !q.data ? (
           <ErrorState error={q.error} onRetry={() => void q.refetch()} />
         ) : !hasData ? (
           <EmptyState
-            icon={LineChart}
             title="No equity history yet"
             description="Equity snapshots appear once the paper account starts trading or marking positions."
           />
         ) : (
-          <TimeSeriesChart series={series} height={244} />
+          <TimeSeriesChart series={series} height={204} />
         )}
       </div>
     </Panel>

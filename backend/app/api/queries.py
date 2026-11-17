@@ -12,7 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import aliased
 
 from app.core.money import ZERO, hours_between
-from app.core.stages import summarize
+from app.core.stages import spans, summarize
 from app.db.models import (
     CopySignal,
     EquitySnapshot,
@@ -103,10 +103,10 @@ async def dashboard(rt: Runtime) -> dict[str, Any]:
 
 
 async def equity_history(rt: Runtime, range_: str) -> dict[str, Any]:
-    spans = {"1d": timedelta(days=1), "7d": timedelta(days=7), "30d": timedelta(days=30)}
+    windows = {"1d": timedelta(days=1), "7d": timedelta(days=7), "30d": timedelta(days=30)}
     q = select(EquitySnapshot).where(EquitySnapshot.account_id == rt.account_id)
-    if range_ in spans:
-        q = q.where(EquitySnapshot.taken_at >= rt.clock.now() - spans[range_])
+    if range_ in windows:
+        q = q.where(EquitySnapshot.taken_at >= rt.clock.now() - windows[range_])
     async with rt.sm() as sess:
         rows = (await sess.scalars(q.order_by(EquitySnapshot.taken_at).limit(5000))).all()
     return {
@@ -290,12 +290,19 @@ async def source_trades(
     return [source_trade_dict(ev, w, sig) for ev, w, sig in rows]
 
 
+def premium(side: str, source_price: Decimal, fill_price: Decimal | None) -> Decimal | None:
+    """Price per share paid beyond the source's fill: above it on a BUY, below it on a SELL."""
+    if fill_price is None:
+        return None
+    diff = fill_price - source_price
+    return -diff if side == "SELL" else diff
+
+
 def signal_dict(sig: CopySignal, w: WatchedWallet, ev: SourceEvent) -> dict[str, Any]:
+    paid = premium(sig.side, sig.source_price, sig.avg_fill_price)
     diff = None
-    if sig.avg_fill_price is not None and sig.source_price:
-        diff = (sig.avg_fill_price - sig.source_price) / sig.source_price * Decimal(10_000)
-        if sig.side == "SELL":
-            diff = -diff
+    if paid is not None and sig.source_price:
+        diff = paid / sig.source_price * Decimal(10_000)
     return {
         "id": sig.id,
         "source_event_id": sig.source_event_id,
@@ -325,6 +332,10 @@ def signal_dict(sig: CopySignal, w: WatchedWallet, ev: SourceEvent) -> dict[str,
         "filled_cost": s(sig.filled_cost),
         "avg_fill_price": s(sig.avg_fill_price),
         "price_diff_bps": s(diff.quantize(Decimal("0.1"))) if diff is not None else None,
+        "premium": s(paid),
+        "stages_ms": (
+            {k: us / 1000 for k, us in spans(sig.stage_us).items()} if sig.stage_us else None
+        ),
         "reasons": list(sig.reasons.get("items", [])),
         "detected_at": ts(sig.detected_at),
         "decided_at": ts(sig.decided_at),
@@ -349,6 +360,63 @@ async def copy_signals(
     async with rt.sm() as sess:
         rows = (await sess.execute(q.order_by(CopySignal.id.desc()).limit(limit))).all()
     return [signal_dict(sig, w, ev) for sig, w, ev in rows]
+
+
+FILLED = (SignalStatus.EXECUTED, SignalStatus.PARTIAL)
+SKIPPED = (SignalStatus.SKIPPED, SignalStatus.REJECTED)
+
+
+def copy_quality_of(signals: list[CopySignal], hours: int) -> dict[str, Any]:
+    """How close copies filled to the source and how fast: the numbers the edge lives on.
+
+    A skip's cause is its last reason: context notes (sizing, fees) come first.
+    """
+    filled = [x for x in signals if x.status in FILLED]
+    paid = sorted(
+        p for x in filled if (p := premium(x.side, x.source_price, x.avg_fill_price)) is not None
+    )
+    path_ms = [
+        int((x.executed_at - x.detected_at).total_seconds() * 1000)
+        for x in filled
+        if x.executed_at is not None
+    ]
+    causes = Counter(
+        items[-1]["code"]
+        for x in signals
+        if x.status in SKIPPED and (items := x.reasons.get("items"))
+    )
+
+    def q(v: float) -> str | None:
+        if not paid:
+            return None
+        return s(paid[min(len(paid) - 1, round(v * (len(paid) - 1)))])
+
+    return {
+        "hours": hours,
+        "signals": len(signals),
+        "filled": len(filled),
+        "skipped": sum(x.status in SKIPPED for x in signals),
+        "failed": sum(x.status == SignalStatus.FAILED for x in signals),
+        "premium_p50": q(0.5),
+        "premium_p90": q(0.9),
+        "at_source_share": (
+            s((Decimal(sum(p <= 0 for p in paid)) / len(paid)).quantize(Decimal("0.0001")))
+            if paid
+            else None
+        ),
+        "detect_to_fill_ms_p50": _p(path_ms, 0.5),
+        "detect_to_fill_ms_p99": _p(path_ms, 0.99),
+        "skip_reasons": [{"code": c, "n": n} for c, n in causes.most_common(5)],
+    }
+
+
+async def copy_quality(rt: Runtime, hours: int) -> dict[str, Any]:
+    since = rt.clock.now() - timedelta(hours=hours)
+    async with rt.sm() as sess:
+        rows = (
+            await sess.scalars(select(CopySignal).where(CopySignal.detected_at >= since))
+        ).all()
+    return copy_quality_of(list(rows), hours)
 
 
 # -------------------------------------------------------------------- wallets

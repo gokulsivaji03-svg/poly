@@ -65,6 +65,8 @@ export function TimeSeriesChart({
         textColor: CHART_COLORS.text,
         fontFamily: 'JetBrains Mono, ui-monospace, monospace',
         fontSize: 10,
+        // Credited once on the System page, as the library's licence requires.
+        attributionLogo: false,
       },
       grid: {
         vertLines: { color: CHART_COLORS.grid },

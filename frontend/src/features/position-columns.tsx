@@ -59,7 +59,6 @@ export const positionColumnsCompact: ColumnDef<Position>[] = [
   numCol<Position>('avg_entry', 'Entry', (p) => p.avg_entry, 'cents', { dp: 1 }),
   numCol<Position>('mark', 'Mark', (p) => p.mark, 'cents', { dp: 1 }),
   numCol<Position>('unrealized_pnl', 'uPnL', (p) => p.unrealized_pnl, 'usd', { signed: true, pnl: true }),
-  hedgeState,
 ]
 
 export const positionColumns: ColumnDef<Position>[] = [

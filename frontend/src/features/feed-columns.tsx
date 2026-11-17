@@ -6,7 +6,7 @@ import { MarketCell, MonoId, ReasonsCell, WalletCell } from '@/components/common
 import { numCol, timeCol } from '@/components/common/column-helpers'
 import { Num, Unavailable } from '@/components/common/num'
 import type { CopySignal, Order, SourceTrade } from '@/lib/api'
-import { fmtNum, fmtShares, truncateAddress } from '@/lib/format'
+import { fmtNum, truncateAddress } from '@/lib/format'
 
 // ---------------------------------------------------------------------------------------------
 // Source trades
@@ -133,23 +133,6 @@ const signalMarket: ColumnDef<CopySignal> = {
   ),
 }
 
-const signalFill: ColumnDef<CopySignal> = {
-  id: 'fill',
-  header: 'Fill',
-  accessorFn: (s) => s.filled_shares ?? undefined,
-  meta: { align: 'right', label: 'Fill (shares @ avg)' },
-  cell: ({ row: { original: s } }) =>
-    s.filled_shares === null ? (
-      <Unavailable reason="no fill" />
-    ) : (
-      <span className="num whitespace-nowrap">
-        {fmtShares(s.filled_shares)}
-        <span className="text-muted-foreground"> @ </span>
-        <Num value={s.avg_fill_price} kind="cents" dp={2} />
-      </span>
-    ),
-}
-
 const signalReasons: ColumnDef<CopySignal> = {
   id: 'reasons',
   header: 'Reasons',
@@ -158,19 +141,6 @@ const signalReasons: ColumnDef<CopySignal> = {
   meta: { label: 'Reasons' },
   cell: ({ row: { original: s } }) => <ReasonsCell reasons={s.reasons} />,
 }
-
-export const copySignalColumnsCompact: ColumnDef<CopySignal>[] = [
-  timeCol<CopySignal>('detected_at', 'Time', (s) => s.detected_at),
-  signalWallet,
-  signalStatus,
-  signalMarket,
-  numCol<CopySignal>('source_alloc_pct', 'Src alloc', (s) => s.source_alloc_pct, 'pct', { dp: 4, label: 'Source allocation %' }),
-  numCol<CopySignal>('proposed_pct', 'Copy %', (s) => s.proposed_pct, 'pct', { dp: 4, label: 'Proposed copy %' }),
-  numCol<CopySignal>('target_budget', 'Target', (s) => s.target_budget, 'usd'),
-  numCol<CopySignal>('approved_budget', 'Approved', (s) => s.approved_budget, 'usd'),
-  signalFill,
-  signalReasons,
-]
 
 export const copySignalColumns: ColumnDef<CopySignal>[] = [
   timeCol<CopySignal>('detected_at', 'Detected', (s) => s.detected_at),
