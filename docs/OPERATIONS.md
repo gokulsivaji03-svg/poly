@@ -27,6 +27,7 @@ PostgreSQL is required, not SQLite. Run migrations before starting. Workers use 
 1. Configure starting bankroll in Settings and explicitly reset the paper account to apply it. Reset deletes that account's orders, fills, lots and equity history; wallet history remains.
 2. Add a public wallet. Initial history is backfill for analytics, not orders to replay now. Newly detected BUY/SELL activity generates auditable copy signals.
 3. Source equity is an estimate. Public position value excludes cash; without optional Polygon RPC collateral observations, it is a lower bound, not a known bankroll. Default risk caps still apply. Fixed sizing modes are available for unknown equity.
+   With `POLYCOPY_POLYGON_RPC_URL` set, the `chain_watcher` worker also detects followed wallets' fills from Polygon exchange logs (~1–2 s instead of ~10 s via the Data API); the Data API poller keeps running and duplicates are dropped. Disable with `POLYCOPY_CHAIN_WATCH_ENABLED=false`.
 4. Inspect skipped/reduced signal reasons rather than assuming every source trade is executable.
 5. Enable the independent hedge scanner. Alert-only is separate from automatic paper hedging. Matched shares and locked-profit estimates require actual ledger fills.
 6. Pause stops new strategy work. Emergency stop persists until explicitly cleared. Neither action can reverse already acquired shares.

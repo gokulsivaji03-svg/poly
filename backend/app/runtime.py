@@ -16,7 +16,7 @@ from app.core.money import ZERO
 from app.db.models import AccountMode
 from app.db.session import make_engine, make_sessionmaker
 from app.integrations.http import ResilientHttp
-from app.integrations.polygon import CollateralReader
+from app.integrations.polygon import CollateralReader, PolygonRpc
 from app.integrations.polymarket.clob import ClobRestBooks, MarketStream
 from app.integrations.polymarket.data_api import DataApiClient
 from app.integrations.polymarket.geoblock import GeoblockChecker
@@ -28,6 +28,7 @@ from app.integrations.polymarket.live import (
 )
 from app.integrations.polymarket.markets import MarketMetadataClient
 from app.services.book_recorder import BookRecorder
+from app.services.chain_watcher import ChainFillWatcher
 from app.services.copy_signal import CopySignalService
 from app.services.equity_estimator import WalletEquityEstimator
 from app.services.event_bus import EventBus
@@ -80,6 +81,7 @@ class Runtime:
     replay: ReplayService
     supervisor: Supervisor
     sdk: Any = None
+    chain: ChainFillWatcher | None = None
     data_api_lag_s: int | None = None
     live_block_reason: str | None = None
 
@@ -146,10 +148,11 @@ class Runtime:
         copy = CopySignalService(
             sm, ledger, executor, market_data, estimator, settings, bus, clock, account_id
         )
+        store = TradeEventStore(sm)
         monitor = WalletMonitorService(
             sm,
             data_api,
-            TradeEventStore(sm),
+            store,
             copy,
             estimator,
             registry,
@@ -161,6 +164,21 @@ class Runtime:
             overlap_s=cfg.ingest_overlap_s,
             backfill=timedelta(hours=cfg.backfill_hours),
         )
+        chain = None
+        if cfg.chain_watch_enabled and cfg.polygon_rpc_url and isinstance(
+            meta, MarketMetadataClient
+        ):
+            chain = ChainFillWatcher(
+                PolygonRpc(http, cfg.polygon_rpc_url),
+                meta,
+                registry,
+                store,
+                copy,
+                bus,
+                clock,
+                poll_interval_s=cfg.chain_poll_interval_s,
+                lookback_blocks=cfg.chain_lookback_blocks,
+            )
         rt = cls(
             cfg=cfg,
             clock=clock,
@@ -188,6 +206,7 @@ class Runtime:
             replay=ReplayService(engine, sm, market_data, clock),
             supervisor=Supervisor(engine, clock),
             sdk=sdk,
+            chain=chain,
         )
         rt._register_workers()
         return rt
@@ -198,6 +217,9 @@ class Runtime:
         sup.add("wallet_monitor", self.monitor.supervise)
         if self.stream is not None:
             sup.add("market_stream", self.stream.run)
+        if self.chain is not None:
+            self.chain.on_tick = lambda: sup.heartbeat("chain_watcher")
+            sup.add("chain_watcher", self.chain.run)
         sup.add(
             "portfolio_snapshots",
             lambda stop: periodic(

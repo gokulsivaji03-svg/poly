@@ -326,6 +326,8 @@ class SourceEvent(Base):
     slug: Mapped[str] = mapped_column(String(255), default="")
     is_combo: Mapped[bool] = mapped_column(default=False)
     is_backfill: Mapped[bool] = mapped_column(default=False)
+    source: Mapped[str] = mapped_column(String(8), default="api", server_default="api")
+    """Where the row was first seen: ``api`` (Data API poll) or ``chain`` (exchange logs)."""
 
 
 class WalletEquitySnapshot(Base):

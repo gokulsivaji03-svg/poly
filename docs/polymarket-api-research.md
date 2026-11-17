@@ -44,6 +44,27 @@ wallet/token. Event identity is therefore a SHA-256 of
 re-reads an overlap window, so repeated rows hash to the same key and are ignored by a
 unique constraint.
 
+### Fast detection from exchange fill logs
+
+The Data API typically shows a trade ~6–8 s after its block (pbf, measured: detection
+median 11 s including our 4 s polling). Exchange fill logs are readable as soon as the
+block is (~1 s Polygon blocks). Verified 2026-11-17 against Data API rows:
+
+| Item | Value |
+|---|---|
+| Exchanges | `0xe111180000d2663c0091e4f400237545b87b996b` (standard), `0xe2222d279d744050d28e00520010520000310f59` (neg-risk) |
+| Fill event topic0 | `0xd543adfd945773f1a62f74f0ee55a5e3b9b1a28262980ba90b1a89f2ea84d8ee` |
+| Topics | `[event, orderHash, maker, taker]` |
+| Data words | `[side (0 BUY, 1 SELL), tokenId, makerAmountFilled, takerAmountFilled, fee, …]`, 6-decimal units. BUY: maker amount = USDC, taker amount = shares; SELL: the reverse. |
+
+Every order a wallet gets filled on emits one event with that wallet as `maker`; when the
+wallet is the taker, its own order is logged with `taker` = the exchange contract. Filtering
+`eth_getLogs` on topic2 ∈ followed wallets therefore yields each of their trades once,
+matching the Data API's per-order rows. Tokens map to markets via Gamma
+`/markets?clob_token_ids=` (same open/`closed=true` split as condition lookups).
+Polymarket matches off-chain and settles in the next block, so a trade cannot be seen
+before it is on-chain.
+
 ### Source bankroll observability
 
 `/v2/value` exposes marked positions only. Free collateral needs an on-chain `balanceOf`

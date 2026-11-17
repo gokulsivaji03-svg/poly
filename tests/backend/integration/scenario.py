@@ -97,6 +97,38 @@ def activity(
     }
 
 
+FILL_TOPIC = "0xd543adfd945773f1a62f74f0ee55a5e3b9b1a28262980ba90b1a89f2ea84d8ee"
+EXCHANGE = "0xe111180000d2663c0091e4f400237545b87b996b"
+
+
+def fill_log(
+    wallet: str,
+    *,
+    block: int,
+    side: str = "BUY",
+    size: str = "500",
+    price: str = "0.40",
+    token: str = YES,
+    tx: str = "0x01",
+    log_index: int = 0,
+) -> dict[str, Any]:
+    """An exchange fill event as returned by ``eth_getLogs`` (wallet is the order's maker)."""
+    shares = int(Decimal(size) * 10**6)
+    usdc = int(Decimal(size) * Decimal(price) * 10**6)
+    maker_amt, taker_amt = (usdc, shares) if side == "BUY" else (shares, usdc)
+    words = [0 if side == "BUY" else 1, int(token), maker_amt, taker_amt, 0, 0, 0]
+    return {
+        "address": EXCHANGE,
+        "topics": [
+            FILL_TOPIC, "0x" + "00" * 32, "0x" + wallet[2:].rjust(64, "0"), "0x" + "ee" * 32
+        ],
+        "data": "0x" + "".join(f"{w:064x}" for w in words),
+        "blockNumber": hex(block),
+        "transactionHash": tx,
+        "logIndex": hex(log_index),
+    }
+
+
 class World:
     """Mutable mocked upstream state. Routes read it on every request."""
 
@@ -109,6 +141,9 @@ class World:
         self.activity_errors = 0
         self.fee_rate: str | None = "0"
         self.resolution: dict[str, str] | None = None
+        self.head = 1000
+        self.block_ts: dict[int, int] = {}
+        self.fill_logs: list[dict[str, Any]] = []
 
     def install(self, router: respx.MockRouter) -> None:
         router.get(f"{DATA}/v2/activity").mock(side_effect=self._activity)
@@ -219,13 +254,30 @@ class World:
 
     def _rpc(self, request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
-        wallet = "0x" + body["params"][0]["data"][-40:]
+        method, params = body["method"], body["params"]
+
+        def ok(result: Any) -> httpx.Response:
+            return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": result})
+
+        if method == "eth_blockNumber":
+            return ok(hex(self.head))
+        if method == "eth_getBlockByNumber":
+            return ok({"timestamp": hex(self.block_ts.get(int(params[0], 16), 0))})
+        if method == "eth_getLogs":
+            f = params[0]
+            lo, hi = int(f["fromBlock"], 16), int(f["toBlock"], 16)
+            makers = set(f["topics"][2])
+            return ok([
+                lg for lg in self.fill_logs
+                if lo <= int(lg["blockNumber"], 16) <= hi and lg["topics"][2] in makers
+            ])
+        wallet = "0x" + params[0]["data"][-40:]
         cash = self.cash.get(wallet.lower())
         if cash is None:
             return httpx.Response(500)
         # Split evenly across pUSD / USDC.e calls (id 0 and 1).
         units = cash * 10**6 // 2 if body["id"] == 0 else cash * 10**6 - cash * 10**6 // 2
-        return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": hex(units)})
+        return ok(hex(units))
 
 
 def scenario_settings(db_url: str) -> Settings:

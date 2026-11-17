@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     geoblock_url: str = "https://polymarket.com/api/geoblock"
     polygon_rpc_url: str | None = None
     """Optional JSON-RPC endpoint for observing source wallets' on-chain collateral."""
+    chain_watch_enabled: bool = True
+    """Detect followed wallets' fills from Polygon exchange logs (needs polygon_rpc_url)."""
+    chain_poll_interval_s: float = Field(default=0.5, gt=0)
+    chain_lookback_blocks: int = Field(default=30, ge=0)
 
     wallet_poll_interval_s: float = Field(default=4.0, gt=0)
     equity_snapshot_interval_s: float = Field(default=60.0, gt=0)

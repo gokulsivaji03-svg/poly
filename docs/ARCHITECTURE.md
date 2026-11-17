@@ -11,9 +11,11 @@ flowchart LR
     GAMMA[Gamma<br/>market metadata · fees]
     CLOB[CLOB REST + WS<br/>order books]
     GEO[Geoblock]
+    RPC[Polygon RPC<br/>exchange fill logs · collateral]
   end
   subgraph Workers[Leader-only workers]
     WM[WalletMonitorService]
+    CW[ChainFillWatcher]
     EE[WalletEquityEstimator]
     CS[CopySignalService]
     HS[HedgeScannerService]
@@ -26,6 +28,7 @@ flowchart LR
     HQ[Hedge quote]
   end
   DAPI --> WM --> TES[(TradeEventStore)]
+  RPC --> CW --> TES
   DAPI --> EE
   GAMMA --> MDS[MarketDataService]
   CLOB --> MDS

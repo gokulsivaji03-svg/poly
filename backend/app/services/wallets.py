@@ -201,10 +201,8 @@ class WalletMonitorService:
         for ev in new:
             if not ev.is_backfill:
                 self._bus.publish("source_trade", {"id": ev.id})
-        if trades and any(not e.is_backfill for e in trades):
-            # Refresh the equity snapshot alongside fresh trades for better pre-trade estimates.
-            with contextlib.suppress(UpstreamError):
-                await self._est.snapshot(wallet)
+        # No equity snapshot here: it adds seconds before copying. The periodic snapshot in
+        # run_wallet plus estimate_at's roll-forward give the pre-trade estimate.
         for ev in trades:
             await self._copy.process(ev, wallet)
         if new:
