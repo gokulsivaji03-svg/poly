@@ -90,6 +90,7 @@ export function fmtMs(v: Maybe<number | string>): string | null {
   if (v == null || v === '') return null
   const ms = Number(v)
   if (!Number.isFinite(ms)) return null
+  if (Math.abs(ms) < 10) return `${ms.toFixed(2)} ms`
   if (Math.abs(ms) < 1000) return `${Math.round(ms)} ms`
   if (Math.abs(ms) < 120_000) return `${(ms / 1000).toFixed(2)} s`
   return `${(ms / 60_000).toFixed(1)} min`
