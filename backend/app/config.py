@@ -36,7 +36,20 @@ class Settings(BaseSettings):
     chain_watch_enabled: bool = True
     """Detect followed wallets' fills from Polygon exchange logs (needs polygon_rpc_url)."""
     chain_poll_interval_s: float = Field(default=0.5, gt=0)
+    """Log polling interval while the WebSocket stream is down."""
+    chain_backstop_interval_s: float = Field(default=2.0, gt=0)
+    """Backstop log polling interval while the WebSocket stream is up."""
     chain_lookback_blocks: int = Field(default=30, ge=0)
+    polygon_ws_url: str | None = None
+    """WebSocket endpoint for pushed fill logs; defaults to polygon_rpc_url as wss://."""
+
+    @property
+    def chain_ws_url(self) -> str | None:
+        if self.polygon_ws_url:
+            return self.polygon_ws_url
+        if self.polygon_rpc_url and self.polygon_rpc_url.startswith("https://"):
+            return "wss://" + self.polygon_rpc_url.removeprefix("https://")
+        return None
 
     wallet_poll_interval_s: float = Field(default=4.0, gt=0)
     equity_snapshot_interval_s: float = Field(default=60.0, gt=0)

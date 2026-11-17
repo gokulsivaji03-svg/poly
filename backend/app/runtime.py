@@ -2,18 +2,20 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import timedelta
 from decimal import Decimal
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.config import ExecutionMode, Settings
 from app.core.clock import Clock, SystemClock
 from app.core.money import ZERO
-from app.db.models import AccountMode
+from app.db.models import AccountMode, SourceEvent, WalletPosition, WatchedWallet
 from app.db.session import make_engine, make_sessionmaker
 from app.integrations.http import ResilientHttp
 from app.integrations.polygon import CollateralReader, PolygonRpc
@@ -177,7 +179,9 @@ class Runtime:
                 bus,
                 clock,
                 poll_interval_s=cfg.chain_poll_interval_s,
+                backstop_interval_s=cfg.chain_backstop_interval_s,
                 lookback_blocks=cfg.chain_lookback_blocks,
+                ws_url=cfg.chain_ws_url,
             )
         rt = cls(
             cfg=cfg,
@@ -221,6 +225,12 @@ class Runtime:
             self.chain.on_tick = lambda: sup.heartbeat("chain_watcher")
             sup.add("chain_watcher", self.chain.run)
         sup.add(
+            "prewarm",
+            lambda stop: periodic(
+                stop, 120, self.prewarm, on_tick=lambda: sup.heartbeat("prewarm")
+            ),
+        )
+        sup.add(
             "portfolio_snapshots",
             lambda stop: periodic(
                 stop,
@@ -254,6 +264,38 @@ class Runtime:
                 stop, 60, self.settle, on_tick=lambda: sup.heartbeat("settlement")
             ),
         )
+
+    async def prewarm(self, limit: int = 300) -> None:
+        """Keep metadata and live books warm for markets followed wallets hold or just traded.
+
+        ``get_market`` caches metadata and subscribes the tokens on the market stream, so a
+        copy decision in one of these markets needs no cold Gamma lookup or REST book fetch.
+        """
+        since = self.clock.now() - timedelta(hours=24)
+        async with self.sm() as s:
+            held = await s.scalars(
+                select(WalletPosition.condition_id)
+                .join(WatchedWallet, WatchedWallet.id == WalletPosition.wallet_id)
+                .where(
+                    WatchedWallet.removed_at.is_(None),
+                    WalletPosition.current_price > Decimal("0.01"),
+                    WalletPosition.current_price < Decimal("0.99"),
+                )
+                .distinct()
+            )
+            traded = await s.scalars(
+                select(SourceEvent.condition_id)
+                .where(SourceEvent.type == "TRADE", SourceEvent.block_ts >= since)
+                .distinct()
+            )
+            conds = sorted({c for c in [*held.all(), *traded.all()] if c})[:limit]
+        sem = asyncio.Semaphore(8)
+
+        async def warm(cid: str) -> None:
+            async with sem:
+                await self.market_data.get_market(cid)
+
+        await asyncio.gather(*(warm(c) for c in conds), return_exceptions=True)
 
     async def settle(self) -> None:
         await self.hedger.settle_resolved()

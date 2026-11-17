@@ -7,6 +7,7 @@ from an in-memory REST source; time is a ManualClock. Nothing touches the networ
 from __future__ import annotations
 
 import json
+from collections import Counter
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
@@ -144,6 +145,7 @@ class World:
         self.head = 1000
         self.block_ts: dict[int, int] = {}
         self.fill_logs: list[dict[str, Any]] = []
+        self.rpc_calls: Counter[str] = Counter()
 
     def install(self, router: respx.MockRouter) -> None:
         router.get(f"{DATA}/v2/activity").mock(side_effect=self._activity)
@@ -255,6 +257,7 @@ class World:
     def _rpc(self, request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         method, params = body["method"], body["params"]
+        self.rpc_calls[method] += 1
 
         def ok(result: Any) -> httpx.Response:
             return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": result})

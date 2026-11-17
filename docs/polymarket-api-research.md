@@ -65,6 +65,12 @@ matching the Data API's per-order rows. Tokens map to markets via Gamma
 Polymarket matches off-chain and settles in the next block, so a trade cannot be seen
 before it is on-chain.
 
+Push vs poll (measured 2026-11-17, 45 s, all exchange fills, publicnode): a WebSocket `logs`
+subscription delivered a fill transaction a median 537 ms (p90 888 ms) before 0.5 s
+`eth_getLogs` polling, first in 99% of transactions; ~2% of transactions seen by polling
+never arrived over the stream, hence the polling backstop. The operator's settlement
+transactions appear in the public mempool a median 0.58 s before their block (58% visible).
+
 ### Source bankroll observability
 
 `/v2/value` exposes marked positions only. Free collateral needs an on-chain `balanceOf`

@@ -182,12 +182,9 @@ class CopySignalService:
             return Reason("UNMAPPED_EVENT", "Event lacks market/token mapping or a valid price.")
         return None
 
-    async def _buy(
-        self, sig: CopySignal, ev: SourceEvent, wallet: WatchedWallet, settings: StrategySettings
-    ) -> CopySignal:
-        reasons: list[Reason] = []
+    async def _sold_after(self, ev: SourceEvent) -> int | None:
         async with self._sm() as s:
-            sold_after = await s.scalar(
+            return await s.scalar(
                 select(SourceEvent.id).where(
                     SourceEvent.wallet_id == ev.wallet_id,
                     SourceEvent.token_id == ev.token_id,
@@ -196,6 +193,38 @@ class CopySignalService:
                     SourceEvent.block_ts > ev.block_ts,
                 ).limit(1)
             )
+
+    async def _view_with_day_pnl(self) -> tuple[PortfolioView, Decimal]:
+        view = await self.portfolio()
+        return view, await self.day_pnl(view)
+
+    async def _buys_in_market(self, condition_id: str) -> int:
+        async with self._sm() as s:
+            n = await s.scalar(
+                select(func.count(Order.id)).where(
+                    Order.account_id == self.account_id,
+                    Order.kind == OrderKind.COPY_BUY,
+                    Order.condition_id == condition_id,
+                    Order.status.in_([OrderStatus.FILLED, OrderStatus.PARTIALLY_FILLED]),
+                )
+            )
+        return n or 0
+
+    async def _buy(
+        self, sig: CopySignal, ev: SourceEvent, wallet: WatchedWallet, settings: StrategySettings
+    ) -> CopySignal:
+        reasons: list[Reason] = []
+        # Independent reads run concurrently; the checks below keep their original order.
+        sold_after, market, (view, day_pnl), estimate, book, buys_in_market = await asyncio.gather(
+            self._sold_after(ev),
+            self._md.get_market(ev.condition_id),
+            self._view_with_day_pnl(),
+            self._est.estimate_at(
+                ev.wallet_id, wallet.address, ev.block_ts, exclude_event_id=ev.id
+            ),
+            self._md.get_book(ev.token_id),
+            self._buys_in_market(ev.condition_id),
+        )
         if sold_after is not None:
             # Late-indexed BUY: its later SELL was already handled, so a copy could never exit.
             return await self._finish(
@@ -203,7 +232,6 @@ class CopySignalService:
                 SignalStatus.SKIPPED,
                 [Reason("SOURCE_SOLD_AFTER", "Source already sold this token after this buy.")],
             )
-        market = await self._md.get_market(ev.condition_id)
         if market is None:
             return await self._finish(
                 sig,
@@ -226,11 +254,6 @@ class CopySignalService:
         if not market.fees_known:
             reasons.append(Reason("FEES_ASSUMED", "Fee schedule unavailable; assumed 7% rate."))
 
-        view = await self.portfolio()
-        day_pnl = await self.day_pnl(view)
-        estimate = await self._est.estimate_at(
-            ev.wallet_id, wallet.address, ev.block_ts, exclude_event_id=ev.id
-        )
         sizing = size_copy(
             source_trade_cost=sig.source_cost,
             source_equity=estimate,
@@ -253,16 +276,6 @@ class CopySignalService:
                 SignalStatus.SKIPPED,
                 [*reasons, Reason(sizing.skip_code or "SIZING_SKIP", "; ".join(sizing.notes))],
                 **common,
-            )
-        book = await self._md.get_book(ev.token_id)
-        async with self._sm() as s:
-            buys_in_market = await s.scalar(
-                select(func.count(Order.id)).where(
-                    Order.account_id == self.account_id,
-                    Order.kind == OrderKind.COPY_BUY,
-                    Order.condition_id == ev.condition_id,
-                    Order.status.in_([OrderStatus.FILLED, OrderStatus.PARTIALLY_FILLED]),
-                )
             )
         decision = evaluate_buy(
             budget=sizing.target_budget,

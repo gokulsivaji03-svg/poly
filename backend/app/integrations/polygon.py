@@ -78,6 +78,11 @@ def _topic(address: str) -> str:
     return "0x" + address.lower().removeprefix("0x").rjust(64, "0")
 
 
+def fill_filter(makers: list[str]) -> dict[str, Any]:
+    """Log filter for exchange fills whose order maker is one of ``makers``."""
+    return {"address": list(EXCHANGES), "topics": [FILL_TOPIC, None, [_topic(m) for m in makers]]}
+
+
 class PolygonRpc:
     """Minimal JSON-RPC client for block heads, timestamps and exchange fill logs."""
 
@@ -97,14 +102,18 @@ class PolygonRpc:
     async def block_number(self) -> int:
         return int(await self._call("eth_blockNumber", []), 16)
 
+    def remember_block(self, number: int, timestamp: int) -> None:
+        """Cache a block timestamp seen elsewhere (e.g. a ``newHeads`` push)."""
+        if len(self._block_ts) > 4096:
+            self._block_ts.clear()
+        self._block_ts[number] = timestamp
+
     async def block_timestamp(self, number: int) -> int:
         ts = self._block_ts.get(number)
         if ts is None:
             block = await self._call("eth_getBlockByNumber", [hex(number), False])
             ts = int(block["timestamp"], 16)
-            if len(self._block_ts) > 4096:
-                self._block_ts.clear()
-            self._block_ts[number] = ts
+            self.remember_block(number, ts)
         return ts
 
     async def fills(self, from_block: int, to_block: int, makers: list[str]) -> list[ChainFill]:
@@ -113,14 +122,7 @@ class PolygonRpc:
             return []
         logs = await self._call(
             "eth_getLogs",
-            [
-                {
-                    "fromBlock": hex(from_block),
-                    "toBlock": hex(to_block),
-                    "address": list(EXCHANGES),
-                    "topics": [FILL_TOPIC, None, [_topic(m) for m in makers]],
-                }
-            ],
+            [{"fromBlock": hex(from_block), "toBlock": hex(to_block), **fill_filter(makers)}],
         )
         out = [f for f in (decode_fill(e) for e in logs) if f is not None]
         return sorted(out, key=lambda f: (f.block_number, f.log_index))

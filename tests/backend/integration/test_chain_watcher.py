@@ -105,3 +105,40 @@ async def test_blocks_are_processed_once_and_in_order(env):
     chain_trade(world, clock, tx="0x2", block=1002, ago=1)
     assert await rt.chain.tick() == 1
     assert [e.tx_hash for e in await rows(rt, SourceEvent)] == ["0x1", "0x2"]
+
+
+def pushed(result):
+    return {"jsonrpc": "2.0", "method": "eth_subscription", "params": {"result": result}}
+
+
+async def test_pushed_fill_is_copied_without_any_rpc_round_trip(env):
+    rt, clock, world, _w = env
+    assert rt.chain is not None
+    await rt.chain.tick()  # learns the followed wallets, as the running worker does
+    calls_before = sum(world.rpc_calls.values())
+    ts = int((clock.now() - timedelta(seconds=1)).timestamp())
+    await rt.chain.handle_message(pushed({"number": hex(1005), "timestamp": hex(ts)}))
+    lg = fill_log(WALLET_A, block=1005, tx="0xpush")
+    assert await rt.chain.handle_message(pushed(lg)) == 1
+    assert sum(world.rpc_calls.values()) == calls_before  # timestamp came from newHeads
+    [sig] = await rows(rt, CopySignal)
+    assert sig.status == SignalStatus.EXECUTED and sig.detection_lag_ms == 1000
+    # The backstop poll re-reads the same block: no second copy.
+    world.head, world.block_ts[1005] = 1005, ts
+    world.fill_logs.append(lg)
+    assert await rt.chain.tick() == 0
+    assert len(await rows(rt, CopySignal)) == 1
+
+
+async def test_removed_and_unfollowed_pushes_are_ignored(env):
+    rt, clock, _world, _w = env
+    assert rt.chain is not None
+    await rt.chain.tick()
+    ts = int(clock.now().timestamp())
+    await rt.chain.handle_message(pushed({"number": hex(1005), "timestamp": hex(ts)}))
+    reorged = {**fill_log(WALLET_A, block=1005, tx="0xr1"), "removed": True}
+    stranger = fill_log("0x" + "99" * 20, block=1005, tx="0xr2")
+    assert await rt.chain.handle_message(pushed(reorged)) == 0
+    assert await rt.chain.handle_message(pushed(stranger)) == 0
+    assert await rt.chain.handle_message({"jsonrpc": "2.0", "id": 2, "result": "0xsub"}) == 0
+    assert await rows(rt, SourceEvent) == []
