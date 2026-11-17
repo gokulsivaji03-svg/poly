@@ -26,6 +26,17 @@ describe('settings backend contract', () => {
     expect(validate(field('hedge', 'min_hedge_shares'), '0')).toBeNull()
   })
 
+  it('lets a blank position or loss limit mean no limit, and nothing else', () => {
+    for (const key of ['max_pct_per_trade', 'max_position_usd', 'max_market_exposure_usd', 'max_total_exposure_pct', 'daily_loss_limit_usd', 'max_buys_per_market']) {
+      const f = field('risk', key)
+      expect(validate(f, '')).toBeNull()
+      expect(toApi(f, '')).toBeNull()
+      expect(toDisplay(f, null)).toBe('')
+    }
+    expect(validate(field('risk', 'max_entry_price'), '')).toBe('Required')
+    expect(validate(field('risk', 'min_order_usd'), '')).toBe('Required')
+  })
+
   it('requires a finite positive maximum hedge quantity instead of sending null', () => {
     const f = field('hedge', 'max_hedge_shares')
     expect(validate(f, '')).toBe('Required')

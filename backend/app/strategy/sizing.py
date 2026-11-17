@@ -91,7 +91,7 @@ def size_copy(
                     )
                 notes.append(
                     "Source equity is a lower bound (cash unobserved); allocation % is an "
-                    "upper estimate and is capped by risk limits."
+                    "upper estimate."
                 )
             # A wallet cannot spend more than it had: pre-trade equity >= trade cost.
             src_eq_used = max(src_eq, source_trade_cost)
