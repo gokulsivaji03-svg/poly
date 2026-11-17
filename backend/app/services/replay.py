@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import logging
 from collections import Counter
 from datetime import datetime, timedelta
@@ -38,7 +39,7 @@ from sqlalchemy.orm import make_transient
 
 from app.config import ExecutionMode
 from app.core.clock import ManualClock
-from app.core.money import ZERO, to_decimal
+from app.core.money import ONE, ZERO, to_decimal
 from app.db.base import Base
 from app.db.models import (
     AccountMode,
@@ -64,7 +65,7 @@ from app.services.event_bus import EventBus
 from app.services.hedge_scanner import HedgeScannerService
 from app.services.ledger import PortfolioLedger
 from app.services.market_data import MarketDataService
-from app.services.replay_history import HistoryClient, MarketHistory, equity_path
+from app.services.replay_history import DEPTH, HistoryClient, MarketHistory, equity_path
 from app.services.settings_service import SettingsService, deep_merge
 from app.services.system_events import SystemEventLog
 
@@ -79,8 +80,13 @@ class ReplayParams(BaseModel):
     wallet_ids: list[int] = Field(min_length=1, max_length=50)
     starting_bankroll: Decimal = Field(default=Decimal("1000"), gt=0)
     detection_delay_s: int = Field(default=2, ge=0, le=3600)
-    prices: Literal["history", "recorded"] = "history"
-    """``history`` fetches activity and minute bars; ``recorded`` uses only local recordings."""
+    prices: Literal["history", "source", "recorded"] = "history"
+    """``history`` fills at minute bars; ``source`` fills at the source's own price plus a
+    random premium; ``recorded`` uses only what this server recorded."""
+    premium_max: Decimal = Field(default=Decimal("0.05"), ge=0, le=Decimal("0.5"))
+    """``source`` mode: each copy pays the source price plus a uniform 0..premium_max."""
+    seed: int = 0
+    """``source`` mode: seeds the premiums, so a run repeats exactly."""
     settings: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -162,6 +168,13 @@ class PointInTimeMetadata:
         return MarketInfo.model_validate(snap.asks["market"])
 
 
+def premium(seed: int, event_key: str, cap: Decimal) -> Decimal:
+    """A uniform draw in [0, cap] fixed by the seed and the event, to 0.1 cent."""
+    digest = hashlib.sha256(f"{seed}:{event_key}".encode()).digest()
+    fraction = Decimal(int.from_bytes(digest[:8], "big")) / Decimal(2**64)
+    return (cap * fraction).quantize(Decimal("0.001"))
+
+
 SOURCE_LOOKBACK = timedelta(days=7)
 """Activity fetched before the window, so sells size against positions opened earlier."""
 EQUITY_GRID = timedelta(minutes=30)
@@ -181,11 +194,35 @@ class HistoryBooks:
         self._recorded, self._history = recorded, history
         self._conditions, self._clock = conditions, clock
         self.bars_served = 0
+        self._quotes: dict[str, OrderBook] = {}
+
+    def quote(self, token_id: str, condition_id: str, price: Decimal, premium: Decimal) -> None:
+        """Until ``unquote``: buys fill at ``price + premium``, sells at ``price - premium``."""
+        info = self._history.markets.get(condition_id)
+        tick = info.tick_size if info else Decimal("0.01")
+        ask = min(price + premium, ONE - Decimal("0.001"))
+        bid = price - premium
+        self._quotes[token_id] = OrderBook(
+            token_id=token_id,
+            condition_id=condition_id,
+            asks=(BookLevel(price=ask, size=DEPTH),),
+            bids=(BookLevel(price=bid, size=DEPTH),) if bid > 0 else (),
+            tick_size=min(tick, Decimal("0.001")),
+            min_order_size=info.min_order_size if info else ZERO,
+            received_at=self._clock.now(),
+            hash=f"quote:{int(self._clock.now().timestamp())}",
+        )
+
+    def unquote(self, token_id: str) -> None:
+        self._quotes.pop(token_id, None)
 
     async def fetch(self, token_ids: list[str]) -> dict[str, OrderBook]:
         out = await self._recorded.fetch(token_ids)
         now = self._clock.now()
         for token in token_ids:
+            if token in self._quotes:
+                out[token] = self._quotes[token]
+                continue
             cid = self._conditions.get(token)
             bar = self._history.book_at(token, cid, now) if cid else None
             if bar is not None and (token not in out or bar.received_at > out[token].received_at):
@@ -295,7 +332,7 @@ class ReplayService:
             rsm = async_sessionmaker(rengine, expire_on_commit=False)
             counts = await self._seed(rsm, schema, params)
             history = None
-            if params.prices == "history":
+            if params.prices != "recorded":
                 history, counts["fetched"], counts["equity_backfilled"] = await self._fetch(
                     rsm, params
                 )
@@ -359,6 +396,9 @@ class ReplayService:
             if live_settings
             else StrategySettings().model_dump(mode="json", by_alias=True)
         )
+        if p.prices == "source":
+            # The premium is the assumption under test; a drift limit would reject it.
+            base = deep_merge(base, {"risk": {"max_price_diff_pct": "1"}})
         doc = deep_merge(
             base,
             {
@@ -598,6 +638,7 @@ class ReplayService:
                     .order_by(SourceEvent.block_ts, SourceEvent.id)
                 )
             ).all()
+        quotes = books if isinstance(books, HistoryBooks) and p.prices == "source" else None
         curve: list[dict[str, Any]] = [
             {"t": p.start.isoformat(), "equity": str(p.starting_bankroll)}
         ]
@@ -614,7 +655,14 @@ class ReplayService:
                 row.detected_at = ev.detected_at
             if history is not None:
                 await hedger.settle_resolved()
+            if quotes is not None:
+                paid = premium(p.seed, ev.event_key, p.premium_max)
+                quotes.quote(ev.token_id, ev.condition_id, ev.price, paid)
+                await md.fetch_books([ev.token_id])
             await copy_engine.on_trade(ev, wallet)
+            if quotes is not None:
+                quotes.unquote(ev.token_id)
+                await md.fetch_books([ev.token_id])
             if strategy.hedge.enabled:
                 await hedger.scan()
             view = await portfolio.view()
@@ -649,6 +697,11 @@ class ReplayService:
                 "signals": dict(by_status),
                 "events_replayed": counts["events"],
                 "prices": p.prices,
+                **(
+                    {"premium_max": str(p.premium_max), "seed": p.seed}
+                    if p.prices == "source"
+                    else {}
+                ),
                 "snapshots_used": hist.served,
                 "minute_bars_used": books.bars_served if isinstance(books, HistoryBooks) else 0,
                 "activity_fetched": counts.get("fetched", 0),

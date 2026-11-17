@@ -577,10 +577,12 @@ export interface ReplayParams {
   detection_delay_s?: number
   /** `history` fetches activity and CLOB minute bars; `recorded` uses only local recordings. */
   prices?: ReplayPrices
+  /** `source` mode: each copy pays the source price plus a uniform 0 to this (dollars). */
+  premium_max?: Decimal
   settings?: SettingsPatch
 }
 
-export type ReplayPrices = 'history' | 'recorded'
+export type ReplayPrices = 'history' | 'source' | 'recorded'
 
 export interface ReplaySummary {
   final_equity: Decimal | null
