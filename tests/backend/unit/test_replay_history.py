@@ -2,7 +2,7 @@
 
 from datetime import timedelta
 
-from app.services.replay_history import DEPTH, MarketHistory
+from app.services.replay_history import DEPTH, MarketHistory, equity_path
 
 from factories import COND, NO, NOW, YES, D, market
 
@@ -55,3 +55,12 @@ def test_a_market_trades_until_it_closes_and_settles_only_after():
     after = h.market_at(COND, NOW + timedelta(hours=1))
     assert after is not None and after.resolved and after.payouts == {YES: D(1), NO: D(0)}
     assert h.market_at("0xother", NOW) is None
+
+
+def test_equity_walks_back_from_one_observation_along_the_pnl():
+    pnl = [(NOW + timedelta(hours=h), D(v)) for h, v in ((0, "0"), (1, "3000"), (2, "5000"))]
+    path = equity_path(D("10000"), NOW + timedelta(hours=2), pnl, NOW, NOW + timedelta(hours=2))
+    assert path == [(NOW, D("5000")), (NOW + timedelta(hours=1), D("8000"))]
+    broke = equity_path(D("4000"), NOW + timedelta(hours=2), pnl, NOW, NOW + timedelta(hours=2))
+    assert broke == [(NOW + timedelta(hours=1), D("2000"))], "a non-positive equity is dropped"
+    assert equity_path(D("1"), NOW - timedelta(hours=1), pnl, NOW, NOW) == [], "no P&L at anchor"

@@ -206,6 +206,42 @@ async def test_history_replay_fills_at_minute_bars_and_settles_at_resolution(rt,
     assert D(summary["final_equity"]) == D("515") and summary["ledger_ok"] is True
 
 
+async def test_history_replay_sizes_from_equity_walked_back_along_pnl(rt, world):
+    w = await rt.registry.add(WALLET_A)
+    async with rt.sm() as s, s.begin():
+        s.add(
+            WalletEquitySnapshot(
+                wallet_id=w.id,
+                observed_at=START + timedelta(hours=2),
+                positions_value=D("4000"),
+                cash_balance=D("6000"),
+                coverage="POSITIONS_AND_CASH",
+                open_positions=3,
+            )
+        )
+    world.pnl_points[WALLET_A] = [
+        (START + timedelta(hours=h), v) for h, v in ((0, "0"), (1, "2500"), (2, "5000"))
+    ]
+    world.activity[WALLET_A] = [
+        activity(WALLET_A, ts=START + timedelta(seconds=60), price="0.40", tx="0xp1")
+    ]
+    world.prices[YES] = [(START, "0.40")]
+    run_id = await rt.replay.submit(
+        ReplayParams(
+            start=START,
+            end=START + timedelta(hours=3),
+            wallet_ids=[w.id],
+            starting_bankroll=D("500"),
+        )
+    )
+    await rt.replay.wait()
+    async with rt.sm() as s:
+        run = await s.get(ReplayRun, run_id)
+    assert run.status == "COMPLETED", run.error
+    [sig] = run.result["signals"]
+    assert D(sig["filled_cost"]) == D("20"), "$200 of a $5,000 wallet is 4%, not 2% of $10,000"
+
+
 async def test_replay_rejects_invalid_windows():
     with pytest.raises(ValueError):
         ReplayParams(start=START, end=START, wallet_ids=[1])

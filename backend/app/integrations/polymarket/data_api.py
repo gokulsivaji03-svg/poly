@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -146,6 +146,21 @@ class DataApiClient:
         return WalletPnl(
             opt_decimal(last.get("realized_pnl")), opt_decimal(last.get("unrealized_pnl"))
         )
+
+    async def pnl_history(self, user: str) -> list[tuple[datetime, Decimal]]:
+        """Hourly lifetime P&L (trading, rebates, rewards and unrealized), oldest first."""
+        body = await self._http.get_json(
+            f"{self._base}/v2/user-pnl", {"user": user, "interval": "all"}
+        )
+        out: list[tuple[datetime, Decimal]] = []
+        for p in (body.get("data") or {}).get("points") or []:
+            total = opt_decimal(p.get("economic_pnl"))
+            if total is None:
+                parts = (opt_decimal(p.get("realized_pnl")), opt_decimal(p.get("unrealized_pnl")))
+                total = None if parts[0] is None else parts[0] + (parts[1] or Decimal(0))
+            if total is not None and p.get("timestamp"):
+                out.append((datetime.fromtimestamp(int(p["timestamp"]), UTC), total))
+        return sorted(out)
 
     async def status_lag_seconds(self) -> int | None:
         body = await self._http.get_json(f"{self._base}/v2/status")

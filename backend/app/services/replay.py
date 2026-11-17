@@ -32,7 +32,7 @@ from decimal import Decimal
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from sqlalchemy import func, select, text
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import make_transient
 
@@ -50,6 +50,7 @@ from app.db.models import (
     WalletEquitySnapshot,
     WatchedWallet,
 )
+from app.domain.equity import EquityCoverage
 from app.domain.market import BookLevel, MarketInfo, OrderBook
 from app.domain.settings import StrategySettings
 from app.engine.context import ContextLoader
@@ -63,7 +64,7 @@ from app.services.event_bus import EventBus
 from app.services.hedge_scanner import HedgeScannerService
 from app.services.ledger import PortfolioLedger
 from app.services.market_data import MarketDataService
-from app.services.replay_history import HistoryClient, MarketHistory
+from app.services.replay_history import HistoryClient, MarketHistory, equity_path
 from app.services.settings_service import SettingsService, deep_merge
 from app.services.system_events import SystemEventLog
 
@@ -431,9 +432,14 @@ class ReplayService:
     async def _backfill_equity(
         self, rsm: async_sessionmaker[AsyncSession], p: ReplayParams, wallets: list[WatchedWallet]
     ) -> int:
-        """A wallet first observed after ``start`` holds its earliest observed equity from
-        ``start`` until that observation, instead of skipping every trade for an unknown
-        bankroll. Look-ahead on sizing only, never on price."""
+        """Equity for a wallet first observed after ``start``, so its trades are not all
+        skipped for an unknown bankroll.
+
+        It is anchored on the earliest snapshot that saw the wallet's cash and walked back
+        hourly along its P&L history (``equity_path``), replacing positions-only snapshots
+        before the anchor. Without a cash snapshot or P&L history, the earliest snapshot is
+        held flat. Either way it looks ahead on sizing only, never on price."""
+        assert self._history is not None
         backfilled = 0
         for w in wallets:
             async with rsm() as s:
@@ -442,38 +448,81 @@ class ReplayService:
                     .where(
                         WalletEquitySnapshot.wallet_id == w.id,
                         WalletEquitySnapshot.observed_at <= p.start,
+                        WalletEquitySnapshot.coverage != EquityCoverage.UNAVAILABLE.value,
                     )
                     .limit(1)
                 )
             if known is not None:
                 continue
             async with self._sm() as s:
-                earliest = await s.scalar(
-                    select(WalletEquitySnapshot)
-                    .where(WalletEquitySnapshot.wallet_id == w.id)
-                    .order_by(WalletEquitySnapshot.observed_at)
-                    .limit(1)
-                )
-            if earliest is None:
-                continue
-            until = min(p.end, earliest.observed_at)
-            grid = [
-                p.start + EQUITY_GRID * i for i in range(int((until - p.start) / EQUITY_GRID) + 1)
-            ]
-            async with rsm() as s, s.begin():
-                s.add_all(
-                    WalletEquitySnapshot(
-                        wallet_id=w.id,
-                        observed_at=at,
-                        positions_value=earliest.positions_value,
-                        cash_balance=earliest.cash_balance,
-                        coverage=earliest.coverage,
-                        open_positions=earliest.open_positions,
+                ordered = select(WalletEquitySnapshot).where(WalletEquitySnapshot.wallet_id == w.id)
+                ordered = ordered.order_by(WalletEquitySnapshot.observed_at).limit(1)
+                anchor = await s.scalar(
+                    ordered.where(
+                        WalletEquitySnapshot.coverage == EquityCoverage.POSITIONS_AND_CASH.value
                     )
-                    for at in grid
                 )
+                earliest = await s.scalar(
+                    ordered.where(WalletEquitySnapshot.coverage != EquityCoverage.UNAVAILABLE.value)
+                )
+            rows = await self._walked_back(w, anchor, p) if anchor is not None else []
+            if anchor is not None and rows:
+                async with rsm() as s, s.begin():
+                    await s.execute(
+                        delete(WalletEquitySnapshot).where(
+                            WalletEquitySnapshot.wallet_id == w.id,
+                            WalletEquitySnapshot.observed_at < anchor.observed_at,
+                            WalletEquitySnapshot.coverage == EquityCoverage.POSITIONS_ONLY.value,
+                        )
+                    )
+                    s.add_all(rows)
+            elif earliest is not None:
+                until = min(p.end, earliest.observed_at)
+                steps = int((until - p.start) / EQUITY_GRID) + 1
+                async with rsm() as s, s.begin():
+                    s.add_all(
+                        WalletEquitySnapshot(
+                            wallet_id=w.id,
+                            observed_at=p.start + EQUITY_GRID * i,
+                            positions_value=earliest.positions_value,
+                            cash_balance=earliest.cash_balance,
+                            coverage=earliest.coverage,
+                            open_positions=earliest.open_positions,
+                        )
+                        for i in range(steps)
+                    )
+            else:
+                continue
             backfilled += 1
         return backfilled
+
+    async def _walked_back(
+        self, w: WatchedWallet, anchor: WalletEquitySnapshot, p: ReplayParams
+    ) -> list[WalletEquitySnapshot]:
+        assert self._history is not None
+        positions = anchor.positions_value or ZERO
+        cash = anchor.cash_balance or ZERO
+        equity = positions + cash
+        if equity <= 0:
+            return []
+        path = equity_path(
+            equity,
+            anchor.observed_at,
+            await self._history.pnl(w.address),
+            p.start - EQUITY_GRID,
+            min(p.end, anchor.observed_at),
+        )
+        cash_share = cash / equity
+        return [
+            WalletEquitySnapshot(
+                wallet_id=w.id,
+                observed_at=at,
+                positions_value=e * (1 - cash_share),
+                cash_balance=e * cash_share,
+                coverage=EquityCoverage.POSITIONS_AND_CASH.value,
+            )
+            for at, e in path
+        ]
 
     async def _count_events(self, rsm: async_sessionmaker[AsyncSession], p: ReplayParams) -> int:
         async with rsm() as s:
