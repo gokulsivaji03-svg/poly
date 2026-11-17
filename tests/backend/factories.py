@@ -98,3 +98,14 @@ async def portfolio_view(ledger, account_id, marks):
 
     acct, lots = await ledger.account_with_lots(account_id)
     return build_portfolio_view(acct, lots, marks, ledger._clock.now())
+
+
+CAPS = {
+    "max_pct_per_trade": D("0.05"),
+    "max_position_usd": D("100"),
+    "max_market_exposure_usd": D("150"),
+    "max_total_exposure_pct": D("0.80"),
+    "daily_loss_limit_usd": D("50"),
+    "max_buys_per_market": 10,
+}
+"""Every optional position and loss limit switched on, for tests of how the limits act."""

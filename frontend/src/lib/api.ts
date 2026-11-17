@@ -433,21 +433,22 @@ export interface SizingSettings {
   min_source_confidence: Decimal
 }
 
+/** A null limit is switched off. */
 export interface RiskSettings {
-  max_pct_per_trade: Decimal
-  max_position_usd: Decimal
-  max_market_exposure_usd: Decimal
-  max_total_exposure_pct: Decimal
+  max_pct_per_trade: Decimal | null
+  max_position_usd: Decimal | null
+  max_market_exposure_usd: Decimal | null
+  max_total_exposure_pct: Decimal | null
   min_liquidity_usd: Decimal
   max_price_diff_pct: Decimal
   max_slippage_pct: Decimal
   max_detection_delay_s: number
   min_cash_reserve_usd: Decimal
-  daily_loss_limit_usd: Decimal
+  daily_loss_limit_usd: Decimal | null
   max_book_age_s: number
   min_order_usd: Decimal
   max_entry_price: Decimal
-  max_buys_per_market: number
+  max_buys_per_market: number | null
 }
 
 export interface CopySettings {

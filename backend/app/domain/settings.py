@@ -71,10 +71,13 @@ class SizingSettings(Model):
 
 
 class RiskSettings(Model):
-    max_pct_per_trade: Dec = Field(default=Decimal("0.05"), gt=0, le=1)
-    max_position_usd: Dec = Field(default=Decimal("100"), gt=0)
-    max_market_exposure_usd: Dec = Field(default=Decimal("150"), gt=0)
-    max_total_exposure_pct: Dec = Field(default=Decimal("0.80"), gt=0, le=1)
+    """Position and loss limits are off (``None``) by default: a copy is sized purely in
+    proportion to the source's bet. The execution checks (price, book, delay) always apply."""
+
+    max_pct_per_trade: Dec | None = Field(default=None, gt=0, le=1)
+    max_position_usd: Dec | None = Field(default=None, gt=0)
+    max_market_exposure_usd: Dec | None = Field(default=None, gt=0)
+    max_total_exposure_pct: Dec | None = Field(default=None, gt=0, le=1)
     min_liquidity_usd: Dec = Field(default=Decimal("25"), ge=0)
     max_price_diff_pct: Dec = Field(default=Decimal("0.05"), ge=0, le=1)
     """Max worst-fill price above the source's execution price (relative)."""
@@ -82,12 +85,12 @@ class RiskSettings(Model):
     """Max worst-fill price above current best ask (relative)."""
     max_detection_delay_s: int = Field(default=300, gt=0)
     min_cash_reserve_usd: Dec = Field(default=Decimal("25"), ge=0)
-    daily_loss_limit_usd: Dec = Field(default=Decimal("50"), gt=0)
+    daily_loss_limit_usd: Dec | None = Field(default=None, gt=0)
     max_book_age_s: int = Field(default=15, gt=0)
     min_order_usd: Dec = Field(default=Decimal("1"), ge=0)
     max_entry_price: Dec = Field(default=Decimal("0.90"), gt=0, le=1)
     """Skip source BUYs priced above this; little upside is left near certainty."""
-    max_buys_per_market: int = Field(default=10, gt=0)
+    max_buys_per_market: int | None = Field(default=None, gt=0)
     """Max filled copy buys per condition; stops averaging into a losing position."""
 
 

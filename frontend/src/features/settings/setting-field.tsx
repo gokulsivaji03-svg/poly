@@ -54,6 +54,7 @@ export function SettingField({ field, form }: { field: FieldDef; form: SettingsF
         prefix={field.kind === 'usd' ? '$' : undefined}
         suffix={field.suffix ?? DEFAULT_SUFFIX[field.kind]}
         value={value}
+        placeholder={field.optional ? 'No limit' : undefined}
         invalid={Boolean(error)}
         aria-describedby={error ? `${id}-error` : undefined}
         onChange={(e) => form.setValue(field, e.target.value)}

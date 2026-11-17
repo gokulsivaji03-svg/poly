@@ -3,7 +3,7 @@ from datetime import timedelta
 from app.domain.settings import RiskSettings
 from app.risk.pretrade import PortfolioSnapshot, check_buy
 
-from factories import COND, NOW, YES, D, book
+from factories import CAPS, COND, NOW, YES, D, book
 
 
 def snap(**kw):
@@ -40,7 +40,7 @@ def run(
         now=NOW,
         book=b if b is not None else book(asks=[("0.50", "1000")]),
         portfolio=portfolio or snap(),
-        settings=RiskSettings(**risk),
+        settings=RiskSettings(**{**CAPS, **risk}),
         trading_halted=halted,
         buys_in_market=buys_in_market,
     )
@@ -122,3 +122,22 @@ def test_limit_price_is_min_of_source_and_slippage_bounds():
         max_slippage_pct=D("0.02"),
     )
     assert d.limit_price == D("0.51")
+
+
+def test_by_default_a_copy_keeps_its_full_proportional_size_whatever_the_losses():
+    d = check_buy(
+        budget=D("600"),
+        token_id=YES,
+        condition_id=COND,
+        source_price=D("0.50"),
+        source_ts=NOW - timedelta(seconds=5),
+        now=NOW,
+        book=book(asks=[("0.50", "100000")]),
+        portfolio=snap(
+            day_pnl=D("-900"), exposure_total=D("300"), exposure_by_condition={COND: D("300")}
+        ),
+        settings=RiskSettings(),
+        trading_halted=False,
+        buys_in_market=500,
+    )
+    assert not d.rejected and d.approved_budget == D("600"), d.reasons

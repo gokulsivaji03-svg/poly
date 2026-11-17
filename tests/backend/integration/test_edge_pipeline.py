@@ -326,7 +326,7 @@ async def test_max_entry_price_boundary(env, world, price, ask, status, code):
 async def test_max_buys_per_market_counts_condition_and_restarts_after_reset(env, world):
     rt, clock, rest = env
     rest.set(NO, asks=[("0.55", "1000")], bids=[("0.53", "1000")])
-    await rt.settings.update({"risk": {"max_buys_per_market": 2}})
+    await rt.settings.update({"risk": {"max_buys_per_market": 2, "max_pct_per_trade": "0.05"}})
     w = await follow(rt, world)
     assert (await trade(rt, clock, world, w)).status == SignalStatus.EXECUTED
     assert (await trade(rt, clock, world, w)).status == SignalStatus.EXECUTED

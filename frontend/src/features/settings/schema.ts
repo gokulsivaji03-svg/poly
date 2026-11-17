@@ -23,6 +23,8 @@ export interface FieldDef {
   /** Upper bound in display units, inclusive (e.g. 100 for percent). */
   max?: string
   maxExclusive?: boolean
+  /** Blank is valid and means no limit (sent as null). */
+  optional?: boolean
   testId?: string
 }
 
@@ -60,27 +62,27 @@ export const SIZING_FIELDS: FieldDef[] = [
     key: 'lower_bound_equity_policy',
     label: 'Lower-bound source equity',
     kind: 'enum',
-    options: opts(['USE_CAPPED', 'Use, capped by risk limits'], ['SKIP', 'Skip the trade']),
+    options: opts(['USE_CAPPED', 'Use the lower bound'], ['SKIP', 'Skip the trade']),
     help: 'When source cash is unobservable (positions-only estimate)',
   },
   { section: 'sizing', key: 'min_source_confidence', label: 'Min equity confidence', kind: 'decimal', max: '1', help: '0–1; below this the trade is skipped' },
 ]
 
 export const RISK_FIELDS: FieldDef[] = [
-  { section: 'risk', key: 'max_pct_per_trade', label: 'Max % per trade', kind: 'pct', positive: true, max: '100', help: 'Of your equity' },
-  { section: 'risk', key: 'max_position_usd', label: 'Max position', kind: 'usd', positive: true, help: 'Per token' },
-  { section: 'risk', key: 'max_market_exposure_usd', label: 'Max market exposure', kind: 'usd', positive: true, help: 'Per condition, both outcomes' },
-  { section: 'risk', key: 'max_total_exposure_pct', label: 'Max total exposure', kind: 'pct', positive: true, max: '100', help: 'Open positions as % of equity' },
+  { section: 'risk', key: 'max_pct_per_trade', label: 'Max % per trade', kind: 'pct', positive: true, optional: true, max: '100', help: 'Of your equity' },
+  { section: 'risk', key: 'max_position_usd', label: 'Max position', kind: 'usd', positive: true, optional: true, help: 'Per token' },
+  { section: 'risk', key: 'max_market_exposure_usd', label: 'Max market exposure', kind: 'usd', positive: true, optional: true, help: 'Per condition, both outcomes' },
+  { section: 'risk', key: 'max_total_exposure_pct', label: 'Max total exposure', kind: 'pct', positive: true, optional: true, max: '100', help: 'Open positions as % of equity' },
   { section: 'risk', key: 'min_liquidity_usd', label: 'Min book liquidity', kind: 'usd' },
   { section: 'risk', key: 'max_price_diff_pct', label: 'Max price drift vs source', kind: 'pct', max: '100' },
   { section: 'risk', key: 'max_slippage_pct', label: 'Max slippage vs best ask', kind: 'pct', max: '100' },
   { section: 'risk', key: 'max_detection_delay_s', label: 'Max detection delay', kind: 'int', positive: true, suffix: 's', help: 'Older source trades are skipped' },
   { section: 'risk', key: 'min_cash_reserve_usd', label: 'Min cash reserve', kind: 'usd' },
-  { section: 'risk', key: 'daily_loss_limit_usd', label: 'Daily loss limit', kind: 'usd', positive: true },
+  { section: 'risk', key: 'daily_loss_limit_usd', label: 'Daily loss limit', kind: 'usd', positive: true, optional: true },
   { section: 'risk', key: 'max_book_age_s', label: 'Max book age', kind: 'int', positive: true, suffix: 's' },
   { section: 'risk', key: 'min_order_usd', label: 'Min order size', kind: 'usd' },
   { section: 'risk', key: 'max_entry_price', label: 'Max entry price', kind: 'cents', positive: true, max: '100', help: 'Skip source buys priced above this' },
-  { section: 'risk', key: 'max_buys_per_market', label: 'Max buys per market', kind: 'int', positive: true, help: 'Filled copy buys per condition; stops averaging down' },
+  { section: 'risk', key: 'max_buys_per_market', label: 'Max buys per market', kind: 'int', positive: true, optional: true, help: 'Filled copy buys per condition; stops averaging down' },
 ]
 
 export const COPY_FIELDS: FieldDef[] = [
@@ -181,7 +183,7 @@ export function toApi(f: FieldDef, display: string): ApiValue {
 export function validate(f: FieldDef, display: string): string | null {
   if (f.kind === 'bool' || f.kind === 'enum') return null
   const s = display.trim()
-  if (s === '') return 'Required'
+  if (s === '') return f.optional ? null : 'Required'
   if (!isDecimalString(s) || /[eE]/.test(s)) return 'Enter a decimal number'
   if (s.startsWith('-')) return 'Must be ≥ 0'
   if (f.positive && compareDecimal(s, '0') === 0) return 'Must be > 0'

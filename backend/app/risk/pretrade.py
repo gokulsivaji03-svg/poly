@@ -100,7 +100,7 @@ def check_buy(
             "ENTRY_PRICE_TOO_HIGH",
             f"Source price {source_price} above max entry {settings.max_entry_price}.",
         )
-    if buys_in_market >= settings.max_buys_per_market:
+    if settings.max_buys_per_market is not None and buys_in_market >= settings.max_buys_per_market:
         return _reject(
             reasons,
             "MAX_BUYS_PER_MARKET",
@@ -116,7 +116,10 @@ def check_buy(
             f"Detected {int(delay.total_seconds())}s after source fill "
             f"(max {settings.max_detection_delay_s}s).",
         )
-    if -portfolio.day_pnl >= settings.daily_loss_limit_usd:
+    if (
+        settings.daily_loss_limit_usd is not None
+        and -portfolio.day_pnl >= settings.daily_loss_limit_usd
+    ):
         return _reject(
             reasons,
             "DAILY_LOSS_LIMIT",
@@ -131,30 +134,39 @@ def check_buy(
 
     approved = budget
 
-    def cap(limit: Decimal, code: str, msg: str) -> None:
+    def cap(limit: Decimal | None, code: str, msg: str) -> None:
         nonlocal approved
+        if limit is None:
+            return
         limit = max(ZERO, limit)
         if approved > limit:
             reasons.append(Reason(code, f"{msg}: {approved:.2f} -> {limit:.2f}"))
             approved = limit
 
+    r = settings
     cap(
-        portfolio.equity * settings.max_pct_per_trade,
+        None if r.max_pct_per_trade is None else portfolio.equity * r.max_pct_per_trade,
         "MAX_PCT_PER_TRADE",
-        f"Capped at {settings.max_pct_per_trade:.2%} of equity",
+        f"Capped at {r.max_pct_per_trade or 0:.2%} of equity",
     )
     cap(
-        settings.max_position_usd - portfolio.exposure_by_token.get(token_id, ZERO),
+        None
+        if r.max_position_usd is None
+        else r.max_position_usd - portfolio.exposure_by_token.get(token_id, ZERO),
         "MAX_POSITION",
         "Capped by max position size",
     )
     cap(
-        settings.max_market_exposure_usd - portfolio.exposure_by_condition.get(condition_id, ZERO),
+        None
+        if r.max_market_exposure_usd is None
+        else r.max_market_exposure_usd - portfolio.exposure_by_condition.get(condition_id, ZERO),
         "MAX_MARKET_EXPOSURE",
         "Capped by max market exposure",
     )
     cap(
-        portfolio.equity * settings.max_total_exposure_pct - portfolio.exposure_total,
+        None
+        if r.max_total_exposure_pct is None
+        else portfolio.equity * r.max_total_exposure_pct - portfolio.exposure_total,
         "MAX_TOTAL_EXPOSURE",
         "Capped by max total portfolio exposure",
     )

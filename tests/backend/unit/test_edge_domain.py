@@ -28,7 +28,7 @@ from app.risk.pretrade import PortfolioSnapshot, check_buy
 from app.strategy.sell_policy import plan_copy_sell
 from app.strategy.sizing import size_copy
 
-from factories import COND, NO, NOW, YES, D, book, fees, market
+from factories import CAPS, COND, NO, NOW, YES, D, book, fees, market
 
 STEP = D("0.01")
 ZERO = Decimal(0)
@@ -160,7 +160,7 @@ def risk(
         now=NOW,
         book=b if b is not None else book(asks=[("0.50", "1000")]),
         portfolio=portfolio or snap(),
-        settings=RiskSettings(**settings),
+        settings=RiskSettings(**{**CAPS, **settings}),
         trading_halted=False,
         buys_in_market=buys_in_market,
     )
