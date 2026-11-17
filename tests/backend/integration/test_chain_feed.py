@@ -8,7 +8,14 @@ import pytest
 import respx
 from app.core.clock import ManualClock
 from app.core.stages import Stage
-from app.db.models import CopySignal, FeedCursor, SignalStatus, SourceEvent, SystemEvent
+from app.db.models import (
+    CopySignal,
+    FeedCursor,
+    Order,
+    SignalStatus,
+    SourceEvent,
+    SystemEvent,
+)
 from scenario import (
     NO,
     WALLET_A,
@@ -20,7 +27,7 @@ from scenario import (
     fill_log,
     make_runtime,
 )
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from conftest import TEST_DB
@@ -336,3 +343,38 @@ async def test_a_logs_node_behind_the_head_retries_the_same_range_next_pass(env)
     assert await rt.feed.tick() == 0
     world.logs_node_behind = False
     assert await rt.feed.tick() == 1, "the cursor did not skip the unread range"
+
+
+async def test_crash_after_the_fill_before_the_journal_recovers_without_a_second_buy(
+    env, monkeypatch
+):
+    rt, clock, world, _w, _rest = env
+    original = rt.copy_engine._journal.record_execution
+
+    async def crash(*args, **kwargs):
+        raise RuntimeError("process died after the fill was booked")
+
+    monkeypatch.setattr(rt.copy_engine._journal, "record_execution", crash)
+    append_fill(world, clock, tx="0xcrash")
+    assert await rt.feed.tick() == 1
+    await rt.feed.drain()
+    async with rt.sm() as s:
+        orders = list((await s.scalars(select(Order))).all())
+    assert [o.status for o in orders] == ["FILLED"], "the fill was booked before the crash"
+
+    monkeypatch.setattr(rt.copy_engine._journal, "record_execution", original)
+    async with rt.sm() as s:  # the crash left the signal open, as a restart would find it
+        await s.execute(
+            update(CopySignal).values(status=SignalStatus.PENDING, order_id=None)
+        )
+        await s.commit()
+    assert await rt.copy_engine.resume_unfinished() == 1
+
+    [sig] = await rows(rt, CopySignal)
+    async with rt.sm() as s:
+        orders = list((await s.scalars(select(Order))).all())
+    acct = await rt.ledger.get_account(rt.account_id)
+    assert sig.status == SignalStatus.EXECUTED and sig.order_id == orders[0].id
+    assert len(orders) == 1 and len(await rt.ledger.open_lots(rt.account_id)) == 1
+    assert acct.reserved == 0, "no reservation left holding cash"
+    assert await rt.ledger.verify(rt.account_id) == []
