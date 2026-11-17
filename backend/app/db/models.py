@@ -15,9 +15,11 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    event,
     func,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.schema import DDL
 
 from app.db.base import Base
 
@@ -86,6 +88,9 @@ class Account(Base):
     fees_paid: Mapped[Decimal]
     created_at: Mapped[datetime] = mapped_column(server_default=_now())
     updated_at: Mapped[datetime] = mapped_column(server_default=_now(), onupdate=_now())
+    ledger_version: Mapped[int] = mapped_column(BigInteger, server_default="0")
+    """Bumped by triggers on every write to this row, its lots or its orders (see
+    LEDGER_VERSION_DDL), so a reader can tell whether a cached copy of them is current."""
 
 
 class CashReservation(Base):
@@ -478,3 +483,40 @@ class ReplayRun(Base):
     error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime]
     finished_at: Mapped[datetime | None]
+
+
+LEDGER_VERSION_DDL = (
+    """CREATE OR REPLACE FUNCTION accounts_bump_ledger_version() RETURNS trigger
+    LANGUAGE plpgsql AS $$
+    BEGIN
+        NEW.ledger_version := OLD.ledger_version + 1;
+        RETURN NEW;
+    END $$""",
+    """CREATE TRIGGER accounts_ledger_version BEFORE UPDATE ON %(fullname)s
+    FOR EACH ROW EXECUTE FUNCTION accounts_bump_ledger_version()""",
+    # The schema comes from the firing table, so replay schemas bump their own accounts.
+    """CREATE OR REPLACE FUNCTION bump_account_ledger_version() RETURNS trigger
+    LANGUAGE plpgsql AS $$
+    BEGIN
+        EXECUTE format(
+            'UPDATE %%I.accounts SET ledger_version = ledger_version + 1 WHERE id = $1',
+            TG_TABLE_SCHEMA
+        ) USING CASE WHEN TG_OP = 'DELETE' THEN OLD.account_id ELSE NEW.account_id END;
+        RETURN NULL;
+    END $$""",
+    # Deferred to commit: the account row is locked only for the commit itself, after every
+    # other lock the transaction takes, so the bump adds no lock-order edge.
+    """CREATE CONSTRAINT TRIGGER lots_ledger_version AFTER INSERT OR UPDATE OR DELETE
+    ON %(fullname)s DEFERRABLE INITIALLY DEFERRED
+    FOR EACH ROW EXECUTE FUNCTION bump_account_ledger_version()""",
+    """CREATE CONSTRAINT TRIGGER orders_ledger_version AFTER INSERT OR UPDATE OR DELETE
+    ON %(fullname)s DEFERRABLE INITIALLY DEFERRED
+    FOR EACH ROW EXECUTE FUNCTION bump_account_ledger_version()""",
+)
+"""Mirrored by migration c71e5b0a9d24; ``create_all`` (the test schema) runs it after the
+``lots`` and ``orders`` tables exist."""
+
+for _statement in LEDGER_VERSION_DDL[:3]:
+    event.listen(Account.__table__, "after_create", DDL(_statement))
+event.listen(Lot.__table__, "after_create", DDL(LEDGER_VERSION_DDL[3]))
+event.listen(Order.__table__, "after_create", DDL(LEDGER_VERSION_DDL[4]))

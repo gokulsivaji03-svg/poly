@@ -106,11 +106,13 @@ Every copy signal records `stage_us`: monotonic microseconds from fill receipt t
 |---|---|---|
 | taped | 1.4 ms | source event committed |
 | started | 1.1 ms | journal row, settings read, wallet queue, market lock |
-| context | 2.2 ms | market, book, equity, portfolio reads in parallel |
+| context | 1.4 ms | market, book and equity reads in parallel; the portfolio from a version-checked snapshot |
 | decided | 0.02 ms | strategy and pre-trade risk |
 | reserved | 1.0 ms | atomic cash reservation |
 | executed | 3.5 ms | idempotent order insert, fill, ledger booking |
-| **total** | **9.9 ms** | ~32 SQL statements; ~45% PostgreSQL wait, ~40% SQLAlchemy CPU |
+| **total** | **8.7 to 9.9 ms** | two runs; ~45% PostgreSQL wait, ~40% SQLAlchemy CPU |
+
+The portfolio a copy decision reads (the account, its open lots and its filled copy buys per market) is cached in memory and keyed on `accounts.ledger_version`. Triggers bump that version on every committed write to the account, its lots or its orders, from any process. A copy reads one integer and reuses the snapshot unless something changed, and each execution reloads it in the background for the next copy. PostgreSQL stays the only source of truth: a stale cache costs one reload, never a wrong read.
 
 The local service time is small next to the network. Detection takes hundreds of milliseconds. A CLOB order from the US West Coast takes about 183 ms. See [LATENCY.md](LATENCY.md) for the network and hardware plan.
 

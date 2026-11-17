@@ -34,6 +34,8 @@ from app.db.models import (
     LotClosure,
     LotOrigin,
     Order,
+    OrderKind,
+    OrderStatus,
     ReservationStatus,
 )
 from app.domain.fills import FillSimulation
@@ -138,6 +140,18 @@ def _lot_cost_for(lot: Lot, shares: Decimal) -> Decimal:
     if shares >= lot.shares_remaining:
         return lot.cost_remaining
     return lot.cost_remaining * shares / lot.shares_remaining
+
+
+@dataclass(frozen=True)
+class LedgerSnapshot:
+    """The account, its open lots and its filled copy buys per condition, as of ``version``.
+
+    Read-only: the rows are detached and shared by every reader of the snapshot."""
+
+    version: int
+    account: Account
+    lots: tuple[Lot, ...]
+    copy_buys: Mapping[str, int]
 
 
 class PortfolioLedger:
@@ -769,6 +783,39 @@ class PortfolioLedger:
                 ).all()
             )
         return acct, lots
+
+    async def ledger_version(self, account_id: int) -> int:
+        async with self._sm() as s:
+            version = await s.scalar(select(Account.ledger_version).where(Account.id == account_id))
+        if version is None:
+            raise LedgerError(f"account {account_id} not found")
+        return version
+
+    async def snapshot(self, account_id: int) -> LedgerSnapshot:
+        """The version is read before the rows, so the rows are at least as new as it says
+        and a commit landing in between only makes the next version check reload."""
+        async with self._sm() as s:
+            version = await s.scalar(select(Account.ledger_version).where(Account.id == account_id))
+            acct = await s.get(Account, account_id)
+            if version is None or acct is None:
+                raise LedgerError(f"account {account_id} not found")
+            lots = (
+                await s.scalars(
+                    select(Lot)
+                    .where(Lot.account_id == account_id, Lot.shares_remaining > 0)
+                    .order_by(Lot.opened_at, Lot.id)
+                )
+            ).all()
+            buys = await s.execute(
+                select(Order.condition_id, func.count(Order.id))
+                .where(
+                    Order.account_id == account_id,
+                    Order.kind == OrderKind.COPY_BUY,
+                    Order.status.in_([OrderStatus.FILLED, OrderStatus.PARTIALLY_FILLED]),
+                )
+                .group_by(Order.condition_id)
+            )
+        return LedgerSnapshot(version, acct, tuple(lots), {c: n for c, n in buys})
 
     async def day_start_equity(self, account_id: int, day_start: datetime) -> Decimal | None:
         async with self._sm() as s:
