@@ -217,6 +217,9 @@ class ChainFeed:
         if not isinstance(tx, dict):
             return 0
         timer = StageTimer()
+        calldata = str(tx.get("input") or "")
+        if not any(address[2:] in calldata for address in self._wallets):
+            return 0  # a substring test (~0.3 us) skips the ~80 us ABI decode
         fills = [f for f in decode_pending_fills(tx) if f.maker in self._wallets]
         ingested = 0
         for maker in {f.maker for f in fills}:
