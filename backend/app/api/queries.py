@@ -601,6 +601,8 @@ async def system_metrics(rt: Runtime) -> dict[str, Any]:
         "chain_stream_reconnects": rt.feed.stream_reconnects,
         "mempool_stream_connected": rt.feed.mempool_connected,
         "mempool_stream_reconnects": rt.feed.mempool_reconnects,
+        "mempool_streams_up": rt.feed.mempool_streams[0],
+        "mempool_streams_total": rt.feed.mempool_streams[1],
         "chain_detection_lag_s": rt.feed.last_lag_s,
         "http_errors_5m": rt.http.stats.errors_since(300),
         "last_poll_at": ts(rt.feed.last_tick_at),

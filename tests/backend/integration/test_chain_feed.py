@@ -261,6 +261,16 @@ async def test_pending_fill_is_copied_and_its_confirmed_log_is_not(env):
     assert len(await rows(rt, CopySignal)) == 1
 
 
+async def test_the_same_pending_transaction_from_a_second_endpoint_is_copied_once(env):
+    rt, _clock, _world, _w, _rest = env
+    await rt.feed.tick()
+    first = pending_match(WALLET_A, tx="0xd1")
+    assert await rt.feed.handle_pending(first) == 1
+    assert await rt.feed.handle_pending(first | {"hash": "0xD1"}) == 0
+    await rt.feed.drain()
+    assert len(await rows(rt, CopySignal)) == 1
+
+
 async def test_pending_fills_of_unfollowed_wallets_are_ignored(env):
     rt, _clock, _world, _w, _rest = env
     await rt.feed.tick()

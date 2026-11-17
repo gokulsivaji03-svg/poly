@@ -39,6 +39,11 @@ class Settings(BaseSettings):
     measured by scripts/mempool_probe.py); needs a node serving full pending bodies. Unset,
     it is on for PAPER and REPLAY and off for LIVE: a pending transaction can still revert,
     so live copying from the mempool is an explicit choice."""
+    chain_mempool_ws_urls: list[str] = Field(default_factory=list)
+    """More WebSocket endpoints for pending transactions, raced against the chain stream's
+    own: each gets a socket and the first sighting of a transaction wins. A node must serve
+    full pending bodies (``newPendingTransactions`` with ``true``); a paid provider in the
+    same region as the operator gives redundancy and an earlier first sighting."""
     chain_poll_interval_s: float = Field(default=0.5, gt=0)
     """Backstop log polling interval while the WebSocket stream is down."""
     chain_backstop_interval_s: float = Field(default=2.0, gt=0)
@@ -51,6 +56,13 @@ class Settings(BaseSettings):
         if self.chain_mempool is not None:
             return self.chain_mempool
         return self.execution_mode is not ExecutionMode.LIVE
+
+    @property
+    def mempool_ws_urls(self) -> tuple[str, ...]:
+        if not self.mempool_enabled:
+            return ()
+        urls = [*([self.chain_ws_url] if self.chain_ws_url else []), *self.chain_mempool_ws_urls]
+        return tuple(dict.fromkeys(urls))
 
     @property
     def chain_ws_url(self) -> str | None:

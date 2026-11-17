@@ -18,7 +18,7 @@ import asyncio
 import contextlib
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -76,7 +76,7 @@ class ChainFeed:
         max_block_range: int = 200,
         unmapped_ttl: timedelta = timedelta(minutes=10),
         on_tick: Callable[[], None] | None = None,
-        mempool: bool = False,
+        mempool_urls: Sequence[str] = (),
     ) -> None:
         self._sm = sm
         self._rpc = rpc
@@ -94,8 +94,9 @@ class ChainFeed:
         self._max_range = max_block_range
         self._unmapped_ttl = unmapped_ttl
         self.on_tick = on_tick
-        self._mempool = mempool
-        self.mempool_connected = False
+        self._mempool_urls = tuple(mempool_urls)
+        self._mempool = bool(self._mempool_urls)
+        self._mempool_up: set[str] = set()
         self.mempool_reconnects = 0
         self._next_block: int | None = None
         self._tokens: dict[str, MarketInfo] = {}
@@ -115,8 +116,7 @@ class ChainFeed:
         streams = []
         if self._ws_url:
             streams.append(asyncio.create_task(self._stream_forever(stop)))
-            if self._mempool:
-                streams.append(asyncio.create_task(self._mempool_forever(stop)))
+        streams += [asyncio.create_task(self._mempool_forever(u, stop)) for u in self._mempool_urls]
         try:
             while not stop.is_set():
                 try:
@@ -177,15 +177,23 @@ class ChainFeed:
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(stop.wait(), timeout=min(30, 0.5 * 2**attempt))
 
-    async def _mempool_forever(self, stop: asyncio.Event) -> None:
-        """Pending operator ``matchOrders`` calls, on a socket of their own so the pending
-        firehose never delays log frames."""
-        assert self._ws_url is not None
+    @property
+    def mempool_connected(self) -> bool:
+        return bool(self._mempool_up)
+
+    @property
+    def mempool_streams(self) -> tuple[int, int]:
+        """(connected, configured) pending-transaction sockets."""
+        return len(self._mempool_up), len(self._mempool_urls)
+
+    async def _mempool_forever(self, url: str, stop: asyncio.Event) -> None:
+        """Pending operator ``matchOrders`` calls from one endpoint, on a socket of its own
+        so the pending firehose never delays log frames."""
         attempt = 0
         while not stop.is_set():
             try:
                 async with websockets.connect(
-                    self._ws_url, open_timeout=10, ping_interval=20, max_size=None
+                    url, open_timeout=10, ping_interval=20, max_size=None
                 ) as ws:
                     await ws.send(
                         json.dumps(
@@ -197,18 +205,18 @@ class ChainFeed:
                             }
                         )
                     )
-                    self.mempool_connected = True
+                    self._mempool_up.add(url)
                     attempt = 0
                     async for raw in ws:
                         msg = json.loads(raw)
                         if msg.get("method") == "eth_subscription":
                             await self.handle_pending(msg["params"]["result"])
             except Exception as exc:  # network or protocol errors: back off and reconnect
-                log.warning("mempool stream disconnected", extra={"error": repr(exc)})
+                log.warning("mempool stream disconnected", extra={"error": repr(exc), "url": url})
             finally:
-                if self.mempool_connected:
+                if url in self._mempool_up:
                     self.mempool_reconnects += 1
-                self.mempool_connected = False
+                self._mempool_up.discard(url)
             attempt += 1
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(stop.wait(), timeout=min(30, 0.5 * 2**attempt))
@@ -217,8 +225,8 @@ class ChainFeed:
     async def handle_pending(self, tx: dict[str, Any]) -> int:
         """Copy a followed wallet's fill from its pending settlement transaction.
 
-        The confirmed log for the same (wallet, tx, token, side) is later dropped by the
-        tape's cross-source dedupe; if the log arrives first, this sighting is dropped."""
+        The tape's dedupe on (wallet, tx, token, side) keeps only the first sighting, so the
+        same transaction from a slower endpoint, or its confirmed log, is never copied twice."""
         if not isinstance(tx, dict):
             return 0
         timer = StageTimer()
