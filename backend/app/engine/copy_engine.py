@@ -36,7 +36,7 @@ from app.db.models import (
 from app.domain.market import FeeModel, Side
 from app.domain.reasons import Reason
 from app.domain.settings import StrategySettings
-from app.engine.context import ContextLoader, source_trade
+from app.engine.context import BATCHED, ContextLoader, source_trade
 from app.engine.journal import SignalJournal
 from app.execution.orders import ExecutionRequest, ExecutionResult, Executor
 from app.risk.pretrade import check_buy, check_sell, halt_reason
@@ -123,7 +123,7 @@ class CopyEngine:
             return await self._finish_skip(sig, intent, timer)
         trade = inputs.strategy.trade
         risk = check_buy(
-            budget=intent.budget,
+            budget=intent.budget + inputs.carried,
             token_id=trade.token_id,
             condition_id=trade.condition_id,
             source_price=trade.price,
@@ -143,9 +143,21 @@ class CopyEngine:
             "approved_budget": risk.approved_budget,
             "limit_price": risk.limit_price,
         }
+        if risk.reject_code == "BELOW_MIN_ORDER":
+            pending = intent.budget + inputs.carried
+            carry = Reason(BATCHED, f"Carried ${intent.budget:.2f}; ${pending:.2f} now pending.")
+            return await self._journal.finish(
+                sig, SignalStatus.SKIPPED, [*reasons, carry], timer=timer, **record
+            )
         if risk.rejected:
             return await self._journal.finish(
                 sig, SignalStatus.REJECTED, reasons, timer=timer, **record
+            )
+        if inputs.carried > 0:
+            reasons.append(
+                Reason(
+                    "BATCH_PLACED", f"Includes ${inputs.carried:.2f} carried from earlier copies."
+                )
             )
         reservation = await self._ledger.reserve(
             self.account_id,
