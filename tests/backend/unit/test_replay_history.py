@@ -67,3 +67,14 @@ def test_equity_walks_back_from_one_observation_along_the_pnl():
         (NOW + timedelta(hours=1), D("2000")),
     ], "a walk-back below zero holds the nearest later equity instead of leaving a gap"
     assert equity_path(D("1"), NOW - timedelta(hours=1), pnl, NOW, NOW) == [], "no P&L at anchor"
+
+
+def test_a_source_premium_is_fixed_per_event_and_spread_evenly_up_to_the_cap():
+    from app.services.replay import premium
+
+    cap = D("0.05")
+    draws = [premium(7, f"k{i}", cap) for i in range(2000)]
+    assert premium(7, "k1", cap) == draws[1], "same seed and event, same premium"
+    assert premium(8, "k1", cap) != draws[1]
+    assert all(D(0) <= d <= cap for d in draws)
+    assert D("0.023") < sum(draws) / len(draws) < D("0.027"), "mean near half the cap"

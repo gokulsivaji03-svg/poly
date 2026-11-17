@@ -242,6 +242,45 @@ async def test_history_replay_sizes_from_equity_walked_back_along_pnl(rt, world)
     assert D(sig["filled_cost"]) == D("20"), "$200 of a $5,000 wallet is 4%, not 2% of $10,000"
 
 
+async def test_source_replay_fills_at_the_source_price_plus_at_most_the_premium(rt, world):
+    w = await rt.registry.add(WALLET_A)
+    async with rt.sm() as s, s.begin():
+        s.add(
+            WalletEquitySnapshot(
+                wallet_id=w.id,
+                observed_at=START - timedelta(minutes=1),
+                positions_value=D("4000"),
+                cash_balance=D("6000"),
+                coverage="POSITIONS_AND_CASH",
+                open_positions=3,
+            )
+        )
+    world.activity[WALLET_A] = [
+        activity(WALLET_A, ts=START + timedelta(seconds=60), price="0.40", tx="0xs1")
+    ]
+    fills = []
+    for cap in ("0", "0.05"):
+        run_id = await rt.replay.submit(
+            ReplayParams(
+                start=START,
+                end=START + timedelta(hours=1),
+                wallet_ids=[w.id],
+                starting_bankroll=D("500"),
+                prices="source",
+                premium_max=D(cap),
+            )
+        )
+        await rt.replay.wait()
+        async with rt.sm() as s:
+            run = await s.get(ReplayRun, run_id)
+        assert run.status == "COMPLETED", run.error
+        [sig] = run.result["signals"]
+        assert sig["status"] == "EXECUTED", sig
+        fills.append(D(sig["avg_fill_price"]))
+    assert fills[0] == D("0.40"), "no premium, no minute bars: the source's own price"
+    assert D("0.40") <= fills[1] <= D("0.45")
+
+
 async def test_replay_rejects_invalid_windows():
     with pytest.raises(ValueError):
         ReplayParams(start=START, end=START, wallet_ids=[1])

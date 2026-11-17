@@ -19,7 +19,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { ApiError, api, type ReplayPrices, type ReplayRun, type ReplaySignal, type ReplayStatus } from '@/lib/api'
 import { CHART_COLORS, toChartPoints } from '@/lib/chart-data'
-import { normalizeDecimal, signDecimal } from '@/lib/decimal'
+import { normalizeDecimal, shiftDecimal, signDecimal } from '@/lib/decimal'
 import { fmtDateTime, fmtMs, truncateAddress } from '@/lib/format'
 import { qk, useReplayRun, useReplayRuns, useSettings, useWallets } from '@/lib/queries'
 import { cn, errorMessage } from '@/lib/utils'
@@ -27,6 +27,8 @@ import { cn, errorMessage } from '@/lib/utils'
 const PRICE_NOTE: Record<ReplayPrices, string> = {
   history:
     "Fetches each wallet's trades and the CLOB's one-minute prices. A copy fills at the last minute price before it was detected, with no spread or depth limit. Markets settle at their payout when they close.",
+  source:
+    "Fetches each wallet's trades. A copy fills at the source's own price plus a random premium up to the cap, with no price-drift limit. Minute prices mark positions; markets settle at their payout when they close.",
   recorded: 'Uses only order-book snapshots this server recorded at or before each replayed moment.',
 }
 
@@ -74,6 +76,7 @@ function ReplayForm({ onStarted, disabled }: { onStarted: (id: string) => void; 
   const [bankroll, setBankroll] = useState<string | null>(null)
   const [delay, setDelay] = useState('2')
   const [prices, setPrices] = useState<ReplayPrices>('history')
+  const [premiumCents, setPremiumCents] = useState('5')
   const [error, setError] = useState<string | null>(null)
 
   const bankrollValue = bankroll ?? normalizeDecimal(settings.data?.settings.paper.starting_bankroll_usd) ?? ''
@@ -88,6 +91,9 @@ function ReplayForm({ onStarted, disabled }: { onStarted: (id: string) => void; 
   if (selected.size === 0) problems.push('Select at least one wallet.')
   if (selected.size > 50) problems.push('Select no more than 50 wallets.')
   if (signDecimal(bankrollValue) !== 1) problems.push('Bankroll must be a positive decimal.')
+  if (prices === 'source' && !(signDecimal(premiumCents.trim()) !== -1 && signDecimal(premiumCents.trim()) !== null && Number(premiumCents) <= 50)) {
+    problems.push('Max premium must be from 0 to 50 cents.')
+  }
   if (delay.trim() !== '' && (!Number.isInteger(delaySeconds) || delaySeconds < 0 || delaySeconds > 3600)) {
     problems.push('Delay must be a whole number from 0 to 3600 seconds.')
   }
@@ -101,6 +107,7 @@ function ReplayForm({ onStarted, disabled }: { onStarted: (id: string) => void; 
         starting_bankroll: normalizeDecimal(bankrollValue)!,
         ...(delay.trim() !== '' ? { detection_delay_s: delaySeconds } : {}),
         prices,
+        ...(prices === 'source' ? { premium_max: shiftDecimal(premiumCents.trim() || '0', -2) ?? '0' } : {}),
       }),
     onSuccess: (res) => {
       setError(null)
@@ -236,13 +243,21 @@ function ReplayForm({ onStarted, disabled }: { onStarted: (id: string) => void; 
         <div className="flex flex-col gap-1">
           <span className="label-caps">Prices</span>
           <SegmentedControl
-            options={['history', 'recorded'] as const}
+            options={['history', 'source', 'recorded'] as const}
             value={prices}
             onChange={setPrices}
             label="Replay price source"
-            format={(o) => (o === 'history' ? 'MINUTE HISTORY' : 'RECORDED BOOKS')}
+            format={(o) => ({ history: 'MINUTE HISTORY', source: 'SOURCE + PREMIUM', recorded: 'RECORDED BOOKS' })[o]}
           />
         </div>
+        {prices === 'source' && (
+          <div className="flex flex-col gap-1 sm:w-1/2">
+            <Label htmlFor="replay-premium" className="label-caps">
+              Max premium
+            </Label>
+            <DecimalInput id="replay-premium" data-testid="replay-premium" suffix="¢" value={premiumCents} onChange={(e) => setPremiumCents(e.target.value)} />
+          </div>
+        )}
         <p className="flex items-start gap-1.5 text-[11px] text-muted-foreground">
           <Info className="mt-0.5 size-3 shrink-0" />
           {PRICE_NOTE[prices]} Uses current strategy settings, with strategies unpaused, emergency stop cleared and execution
