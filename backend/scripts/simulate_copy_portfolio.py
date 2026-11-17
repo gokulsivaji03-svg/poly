@@ -173,6 +173,7 @@ def main() -> None:
     token_cond: dict[str, str] = {}
     skips: Counter[str] = Counter()
     copied = Counter()
+    costs: dict[str, Decimal] = defaultdict(lambda: ZERO)
     curve: list[tuple[int, Decimal]] = []
     peak = args.bankroll
     max_dd = ZERO
@@ -239,6 +240,9 @@ def main() -> None:
                             us.shares[tok] += sh
                             us.cost[tok] += budget
                             cash -= budget
+                            costs["fees"] += sh * (per - entry)
+                            costs["slippage"] += sh * (entry - price)
+                            costs["turnover"] += budget
                             copied["BUY" + ("_CASH_LIMITED" if limited else "")] += 1
                 elif r["side"] == "SELL":
                     held = src.shares[tok]
@@ -248,7 +252,11 @@ def main() -> None:
                     if ours > ZERO and m is not None and cid not in settled:
                         sell = ours * frac
                         px = max(price - args.slippage, MIN_PRICE)
-                        proceeds = sell * px - m.fees.fee_usdc(sell, px)
+                        fee = m.fees.fee_usdc(sell, px)
+                        proceeds = sell * px - fee
+                        costs["fees"] += fee
+                        costs["slippage"] += sell * (price - px)
+                        costs["turnover"] += sell * px
                         basis = us.cost[tok] * sell / ours
                         us.shares[tok] = ours - sell
                         us.cost[tok] -= basis
@@ -306,6 +314,8 @@ def main() -> None:
           f"cash ${cash:,.2f}  open positions ${open_value:,.2f}")
     print(f"max drawdown {max_dd:.1%}  peak ${peak:,.2f}")
     print("copied: " + ", ".join(f"{k} {v}" for k, v in copied.most_common()))
+    print(f"costs: fees ${costs['fees']:,.2f}  slippage ${costs['slippage']:,.2f}  "
+          f"turnover ${costs['turnover']:,.2f}")
     print("skipped buys: " + ", ".join(f"{k} {v}" for k, v in skips.most_common()))
     print("\nmonth-end equity:")
     month: dict[str, Decimal] = {}
@@ -327,6 +337,7 @@ def main() -> None:
             "curve": [[t, str(e)] for t, e in curve],
             "pnl_by_market": {cid: str(v) for cid, v in pnl_by_market.items()},
             "copied": dict(copied), "skips": dict(skips),
+            "costs": {k: str(v) for k, v in costs.items()},
         }, indent=1))
 
 
