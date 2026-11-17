@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
-import { AlertTriangle, Loader2, Plus, Trash2, Wallet } from 'lucide-react'
+import { AlertTriangle, Loader2, Plus, Trash2 } from 'lucide-react'
 import { useMemo, useState, type FormEvent } from 'react'
 import { Link } from 'react-router'
 import { toast } from 'sonner'
@@ -343,7 +343,6 @@ export function WalletsPage() {
           renderExpanded={(w) => <RecentTrades walletId={String(w.id)} />}
           empty={
             <EmptyState
-              icon={Wallet}
               title="No wallets yet"
               description="Add a wallet to start monitoring. New trades are detected within seconds and copied according to your sizing settings."
             />

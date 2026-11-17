@@ -18,6 +18,7 @@ export const qk = {
   sourceTrades: (limit: number) => ['source-trades', limit] as const,
   copySignalsAll: ['copy-signals'] as const,
   copySignals: (limit: number) => ['copy-signals', limit] as const,
+  copyQuality: (hours: number) => ['copy-quality', hours] as const,
   hedges: ['hedges'] as const,
   hedgeEvents: ['hedge-events'] as const,
   settings: ['settings'] as const,
@@ -108,6 +109,11 @@ export function useCopySignals(limit = 50) {
     refetchInterval,
     select: (d) => d.signals,
   })
+}
+
+export function useCopyQuality(hours = 24) {
+  // An aggregate over many signals: not pushed over WS, so poll.
+  return useQuery({ queryKey: qk.copyQuality(hours), queryFn: () => api.copyQuality(hours), refetchInterval: 10_000 })
 }
 
 export function useHedges() {

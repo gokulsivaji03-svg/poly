@@ -1,40 +1,13 @@
-import {
-  Activity,
-  History,
-  LayoutDashboard,
-  Layers,
-  ServerCog,
-  Settings,
-  ShieldHalf,
-  Wallet,
-  type LucideIcon,
-} from 'lucide-react'
-import { Suspense } from 'react'
-import { NavLink, Outlet } from 'react-router'
+import { Suspense, useCallback, useEffect, useState } from 'react'
+import { NavLink, Outlet, useNavigate } from 'react-router'
 import { Panel } from '@/components/common/panel'
 import { SkeletonLines } from '@/components/common/states'
+import { CommandPalette } from '@/features/command-palette'
+import { KillDialog } from '@/features/kill-dialog'
 import { cn } from '@/lib/utils'
 import { DisconnectedBanner } from './disconnected-banner'
+import { NAV } from './nav'
 import { TopBar } from './top-bar'
-
-interface NavItem {
-  to: string
-  label: string
-  icon: LucideIcon
-  testId: string
-  end?: boolean
-}
-
-const NAV: NavItem[] = [
-  { to: '/', label: 'Dashboard', icon: LayoutDashboard, testId: 'nav-dashboard', end: true },
-  { to: '/wallets', label: 'Wallets', icon: Wallet, testId: 'nav-wallets' },
-  { to: '/positions', label: 'Positions', icon: Layers, testId: 'nav-positions' },
-  { to: '/hedges', label: 'Hedges', icon: ShieldHalf, testId: 'nav-hedges' },
-  { to: '/activity', label: 'Activity', icon: Activity, testId: 'nav-activity' },
-  { to: '/replay', label: 'Replay', icon: History, testId: 'nav-replay' },
-  { to: '/settings', label: 'Settings', icon: Settings, testId: 'nav-settings' },
-  { to: '/system', label: 'System', icon: ServerCog, testId: 'nav-system' },
-]
 
 /**
  * A single <nav> renders as a left rail on md+ and a fixed bottom bar on mobile, so every nav
@@ -46,21 +19,20 @@ function NavRail() {
       aria-label="Primary"
       className={cn(
         'pb-safe fixed inset-x-0 bottom-0 z-40 flex border-t bg-card/95 backdrop-blur',
-        'md:static md:z-auto md:w-14 md:flex-col md:border-t-0 md:border-r md:bg-card md:pt-2 md:pb-0 md:backdrop-blur-none',
-        'xl:w-44',
+        'md:static md:z-auto md:w-12 md:flex-col md:border-t-0 md:border-r md:bg-card md:pt-1 md:pb-0 md:backdrop-blur-none',
       )}
     >
-      {NAV.map(({ to, label, icon: Icon, testId, end }) => (
+      {NAV.map(({ to, label, icon: Icon, testId, end }, i) => (
         <NavLink
           key={to}
           to={to}
           end={end}
           data-testid={testId}
-          title={label}
+          title={`${label}  ${i + 1}`}
           className={({ isActive }) =>
             cn(
               'group relative flex flex-1 flex-col items-center justify-center gap-0.5 py-1.5 text-[10px] text-muted-foreground transition-colors hover:text-foreground',
-              'md:flex-none md:py-2.5 xl:flex-row xl:justify-start xl:gap-2.5 xl:px-4 xl:text-[12.5px]',
+              'md:flex-none md:py-2.5',
               'focus-visible:text-foreground focus-visible:outline-none',
               isActive && 'text-foreground',
             )
@@ -76,8 +48,8 @@ function NavRail() {
                   isActive && 'opacity-100',
                 )}
               />
-              <Icon className={cn('size-[18px] shrink-0 xl:size-4', isActive && 'text-primary')} strokeWidth={1.75} />
-              <span className="leading-none md:sr-only xl:not-sr-only">{label}</span>
+              <Icon className={cn('size-[18px] shrink-0 md:size-4', isActive && 'text-primary')} strokeWidth={1.75} />
+              <span className="leading-none md:sr-only">{label}</span>
             </>
           )}
         </NavLink>
@@ -86,10 +58,36 @@ function NavRail() {
   )
 }
 
+/** Number keys switch pages; ⌘K or Ctrl+K opens the palette. Typing in a field or dialog is never hijacked. */
+function useHotkeys(togglePalette: () => void) {
+  const navigate = useNavigate()
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault()
+        togglePalette()
+        return
+      }
+      if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return
+      const target = e.target as HTMLElement | null
+      if (target?.closest('input, textarea, select, [contenteditable="true"], [role="dialog"], [role="alertdialog"]')) return
+      const item = NAV[Number(e.key) - 1]
+      if (item) void navigate(item.to)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [navigate, togglePalette])
+}
+
 export function AppShell() {
+  const [palette, setPalette] = useState(false)
+  const [kill, setKill] = useState(false)
+  useHotkeys(useCallback(() => setPalette((o) => !o), []))
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <TopBar />
+      <TopBar onPalette={() => setPalette(true)} onKill={() => setKill(true)} />
+      <CommandPalette open={palette} onOpenChange={setPalette} onKill={() => setKill(true)} />
+      <KillDialog open={kill} onOpenChange={setKill} />
       <DisconnectedBanner />
       <div className="flex min-h-0 flex-1">
         <NavRail />

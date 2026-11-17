@@ -123,6 +123,9 @@ async def test_controls_and_dashboard(client):
     assert health["ledger_ok"] is True and health["mode"] == "PAPER"
     assert health["metrics"]["copy_stages"] == [], "no copies yet, no stage timings"
     assert health["metrics"]["mempool_stream_connected"] is False
+    quality = (await client.get("/api/copy-quality?hours=6", headers=h)).json()
+    assert (quality["hours"], quality["signals"], quality["premium_p50"]) == (6, 0, None)
+    assert (await client.get("/api/copy-quality?hours=0", headers=h)).status_code == 422
     events = (await client.get("/api/system/events", headers=h)).json()["events"]
     assert {e["kind"] for e in events} >= {"EMERGENCY_STOP", "PAPER_RESET"}
     assert (await client.get("/api/positions", headers=h)).json() == {"positions": []}

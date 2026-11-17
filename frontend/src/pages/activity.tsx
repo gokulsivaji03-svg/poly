@@ -1,4 +1,3 @@
-import { ClipboardList, Radio, Zap } from 'lucide-react'
 import { useMemo } from 'react'
 import { useSearchParams } from 'react-router'
 import { DataTable } from '@/components/common/data-table'
@@ -26,7 +25,7 @@ function SourceTradesTab() {
       onRetry={() => void q.refetch()}
       columnToggle
       toolbar={<span className="text-[11px] text-muted-foreground">Latest {FEED_LIMIT} detected source events</span>}
-      empty={<EmptyState icon={Radio} title="No source trades yet" description="Trades from monitored wallets appear here as they are detected." />}
+      empty={<EmptyState title="No source trades yet" description="Trades from monitored wallets appear here as they are detected." />}
     />
   )
 }
@@ -45,7 +44,7 @@ function SignalsTab() {
       columnToggle
       initialHidden={['limit_price', 'filled_cost', 'decided_at', 'order_id']}
       toolbar={<span className="text-[11px] text-muted-foreground">Sizing, risk reductions and fills per source trade</span>}
-      empty={<EmptyState icon={Zap} title="No copy signals yet" description="Signals are generated for every detected trade of a copied wallet." />}
+      empty={<EmptyState title="No copy signals yet" description="Signals are generated for every detected trade of a copied wallet." />}
     />
   )
 }
@@ -69,7 +68,7 @@ function OrdersTab() {
       onRetry={() => void q.refetch()}
       columnToggle
       initialHidden={['token_id', 'gross_shares', 'worst_price']}
-      empty={<EmptyState icon={ClipboardList} title="No orders yet" description="Paper orders from copy signals and hedges are listed here with fill details." />}
+      empty={<EmptyState title="No orders yet" description="Paper orders from copy signals and hedges are listed here with fill details." />}
     />
   )
 }

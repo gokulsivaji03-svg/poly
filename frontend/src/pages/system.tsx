@@ -1,5 +1,5 @@
 import type { ColumnDef } from '@tanstack/react-table'
-import { CheckCircle2, Globe2, ScrollText, XCircle } from 'lucide-react'
+import { CheckCircle2, Globe2, XCircle } from 'lucide-react'
 import { LevelBadge, Tag, WorkerStateBadge } from '@/components/common/badges'
 import { TimeCell } from '@/components/common/cells'
 import { timeCol } from '@/components/common/column-helpers'
@@ -241,9 +241,16 @@ export function SystemPage() {
           onRetry={() => void events.refetch()}
           initialSorting={[{ id: 'created_at', desc: true }]}
           maxHeight={520}
-          empty={<EmptyState icon={ScrollText} title="No system events" />}
+          empty={<EmptyState title="No system events" />}
         />
       </Panel>
+      <p className="text-[11px] text-faint">
+        Charts by{' '}
+        <a href="https://www.tradingview.com/" target="_blank" rel="noreferrer" className="hover:text-muted-foreground">
+          TradingView Lightweight Charts
+        </a>
+        .
+      </p>
     </>
   )
 }

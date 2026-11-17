@@ -44,7 +44,7 @@ export function LoginPage() {
           </span>
           <div>
             <div className="text-[15px] font-semibold tracking-tight">polycopy</div>
-            <div className="label-caps">Copy-trading &amp; hedging terminal</div>
+            <div className="label-caps">Copy-trading terminal</div>
           </div>
         </div>
         <form onSubmit={submit} className="flex flex-col gap-4 rounded-sm border bg-card p-5" noValidate>

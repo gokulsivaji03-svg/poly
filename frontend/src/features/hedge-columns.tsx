@@ -112,15 +112,6 @@ const viableCol: ColumnDef<HedgeOpportunity> = {
   cell: ({ row: { original: o } }) => (o.viable ? <Tag tone="pos">viable</Tag> : <ReasonsCell reasons={o.reasons} />),
 }
 
-export const hedgeColumnsCompact: ColumnDef<HedgeOpportunity>[] = [
-  marketCol,
-  primaryCol,
-  numCol<HedgeOpportunity>('matched_shares', 'Matched', (o) => o.matched_shares, 'shares'),
-  numCol<HedgeOpportunity>('net_profit_per_share', 'Net/sh', (o) => o.net_profit_per_share, 'cents', { signed: true, pnl: true }),
-  numCol<HedgeOpportunity>('net_profit', 'Locked', (o) => o.net_profit, 'usd', { signed: true, pnl: true }),
-  viableCol,
-]
-
 export const hedgeColumns: ColumnDef<HedgeOpportunity>[] = [
   marketCol,
   {

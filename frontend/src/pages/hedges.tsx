@@ -1,6 +1,5 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
-import { ScrollText, ShieldHalf } from 'lucide-react'
 import { useMemo } from 'react'
 import { toast } from 'sonner'
 import { HedgeStateBadge, Tag } from '@/components/common/badges'
@@ -238,7 +237,6 @@ export function HedgesPage() {
           rowClassName={(o) => (o.viable ? undefined : 'text-foreground/70')}
           empty={
             <EmptyState
-              icon={ShieldHalf}
               title="No open positions to hedge"
               description={
                 hs && !hs.enabled
@@ -259,7 +257,7 @@ export function HedgesPage() {
           onRetry={() => void events.refetch()}
           initialSorting={[{ id: 'created_at', desc: true }]}
           maxHeight={420}
-          empty={<EmptyState icon={ScrollText} title="No hedge events yet" description={`State transitions such as ${humanizeCode('HEDGE_OPPORTUNITY').toLowerCase()} → fully hedged are logged here.`} />}
+          empty={<EmptyState title="No hedge events yet" description={`State transitions such as ${humanizeCode('HEDGE_OPPORTUNITY').toLowerCase()} → fully hedged are logged here.`} />}
         />
       </Panel>
     </>

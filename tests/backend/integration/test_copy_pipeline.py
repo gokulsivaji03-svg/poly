@@ -5,6 +5,7 @@ from decimal import Decimal
 
 import pytest
 import respx
+from app.api import queries
 from app.core.clock import ManualClock
 from app.db.models import CopySignal, SignalStatus, SourceEvent, WalletEquitySnapshot
 from scenario import (
@@ -113,6 +114,11 @@ async def test_proportional_copy_end_to_end(env, world):
     assert sig.filled_shares == D("25")
     assert sig.filled_cost == D("10")
     assert sig.detection_lag_ms == 5000
+    [row] = await queries.copy_signals(rt, limit=1)
+    assert D(row["premium"]) == 0, "filled at the source's price"
+    assert row["stages_ms"]["total"] > 0
+    quality = await queries.copy_quality(rt, 24)
+    assert (quality["filled"], D(quality["at_source_share"])) == (1, 1)
     view = await rt.portfolio.view()
     assert view.cash == D("490")
     assert await rt.ledger.verify(rt.account_id) == []

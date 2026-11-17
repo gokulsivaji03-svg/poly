@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
-import { History, Info, LineChart, Loader2, Play, X } from 'lucide-react'
+import { Info, Loader2, Play, X } from 'lucide-react'
 import { useMemo, useState, type FormEvent } from 'react'
 import { Link, useSearchParams } from 'react-router'
 import { OutcomeBadge, SideBadge, SignalStatusBadge, Tag, type Tone } from '@/components/common/badges'
@@ -451,7 +451,6 @@ function RunDetail({ id, onClose }: { id: string; onClose: () => void }) {
               <TimeSeriesChart series={series} height={244} />
             ) : (
               <EmptyState
-                icon={LineChart}
                 title={run.status === 'RUNNING' ? 'Replay in progress…' : 'No equity points'}
                 description={run.status === 'RUNNING' ? 'Results appear when the replay finishes.' : undefined}
               />
@@ -515,7 +514,6 @@ export function ReplayPage() {
             maxHeight={520}
             empty={
               <EmptyState
-                icon={History}
                 title="No replays yet"
                 description="Pick a period and wallets, then start a replay to see how copying them would have performed."
               />

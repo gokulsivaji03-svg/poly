@@ -1,4 +1,3 @@
-import { Layers } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { DataTable } from '@/components/common/data-table'
 import { PageHeader, Panel } from '@/components/common/panel'
@@ -49,7 +48,6 @@ export function PositionsPage() {
           canExpand={(p) => p.lots.length > 0}
           empty={
             <EmptyState
-              icon={Layers}
               title={filter === 'all' ? 'No open positions' : `No ${filter} positions`}
               description="Positions open when copied trades or paper hedges fill."
             />

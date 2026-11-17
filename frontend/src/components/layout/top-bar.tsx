@@ -1,4 +1,4 @@
-import { LogOut, OctagonX, PauseCircle, User } from 'lucide-react'
+import { Command, LogOut, OctagonX, PauseCircle, User } from 'lucide-react'
 import { Link } from 'react-router'
 import { Tag } from '@/components/common/badges'
 import { Button } from '@/components/ui/button'
@@ -80,7 +80,7 @@ function UserMenu() {
   )
 }
 
-export function TopBar() {
+export function TopBar({ onPalette, onKill }: { onPalette: () => void; onKill: () => void }) {
   const { data } = useDashboard()
   const mode = data?.mode
   return (
@@ -121,16 +121,36 @@ export function TopBar() {
           <span>
             copy <span className={data.copy_enabled ? 'text-foreground' : 'text-faint'}>{data.copy_enabled ? 'on' : 'off'}</span>
           </span>
-          <span className="text-faint">/</span>
-          <span>
-            hedge{' '}
-            <span className={data.hedge_enabled ? 'text-foreground' : 'text-faint'}>
-              {data.hedge_enabled ? (data.hedge_mode === 'AUTO_PAPER' ? 'auto' : 'alert') : 'off'}
-            </span>
-          </span>
+          {data.hedge_enabled && (
+            <>
+              <span className="text-faint">/</span>
+              <span>
+                hedge <span className="text-foreground">{data.hedge_mode === 'AUTO_PAPER' ? 'auto' : 'alert'}</span>
+              </span>
+            </>
+          )}
         </div>
       )}
       <div className="ml-auto flex items-center gap-1.5">
+        <button
+          type="button"
+          onClick={onPalette}
+          aria-label="Open command palette"
+          className="hidden h-6 items-center gap-1 rounded-sm border px-2 text-[11px] text-muted-foreground hover:text-foreground sm:flex"
+        >
+          <Command className="size-3" />K
+        </button>
+        {data && !data.emergency_stop && (
+          <Button
+            size="xs"
+            variant="outline"
+            data-testid="btn-kill"
+            onClick={onKill}
+            className="h-6 border-neg/40 px-2 text-[11px] font-semibold tracking-wider text-neg hover:bg-neg/10 hover:text-neg"
+          >
+            <OctagonX className="size-3" /> KILL
+          </Button>
+        )}
         <ConnStatus />
         <UserMenu />
       </div>

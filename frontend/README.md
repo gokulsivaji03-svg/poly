@@ -4,6 +4,11 @@ React/TypeScript terminal for the authenticated backend API. Dashboard, source w
 positions/lots, paper hedges and simulated merges, activity, historical replay, strategy settings and
 system health use real REST/WebSocket responses. There is no production mock-data mode.
 
+The dashboard leads with execution quality: premium paid over each source fill, the share filled
+at the source's price, detect-to-fill time, and a blotter whose rows expand into per-stage timings.
+`⌘K` (Ctrl+K) opens the command palette. Keys `1` to `8` switch pages in rail order. **KILL** in
+the top bar engages the emergency stop after one confirmation.
+
 ## Development
 
 Run the backend at `http://127.0.0.1:8000`, with the database, admin login and workers configured.

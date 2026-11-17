@@ -111,6 +111,13 @@ async def copy_signals(
     return {"signals": await q.copy_signals(rt_of(request), limit=limit)}
 
 
+@router.get("/copy-quality")
+async def copy_quality(
+    request: Request, _: User, hours: Annotated[int, Query(ge=1, le=168)] = 24
+) -> dict[str, Any]:
+    return await q.copy_quality(rt_of(request), hours)
+
+
 # ------------------------------------------------------------ settings/control
 async def _settings_payload(rt: Runtime) -> dict[str, Any]:
     st = await rt.settings.get()
