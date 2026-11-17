@@ -146,6 +146,7 @@ class World:
         self.block_ts: dict[int, int] = {}
         self.fill_logs: list[dict[str, Any]] = []
         self.rpc_calls: Counter[str] = Counter()
+        self.receipts: dict[str, dict[str, Any]] = {}
         self.rpc_errors = 0
         """Next N eth_getLogs calls fail with HTTP 503 (RPC outage)."""
 
@@ -269,6 +270,8 @@ class World:
 
         if method == "eth_blockNumber":
             return ok(hex(self.head))
+        if method == "eth_getTransactionReceipt":
+            return ok(self.receipts.get(params[0]))
         if method == "eth_getBlockByNumber":
             return ok({"timestamp": hex(self.block_ts.get(int(params[0], 16), 0))})
         if method == "eth_getLogs":

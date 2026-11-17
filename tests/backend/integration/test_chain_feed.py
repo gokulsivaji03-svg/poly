@@ -228,8 +228,11 @@ def pending_match(wallet, *, tx, usdc="200", shares="500", token=YES):
     amount, got = int(D(usdc) * 10**6), int(D(shares) * 10**6)
     order = (1, wallet, wallet, int(token), amount, got, 0, 0, 0, b"\0" * 32, b"\0" * 32, b"")
     calldata = encode(_MATCH_ARGS, [b"\0" * 32, order, [], amount, [], 0, []])
-    return {"hash": tx, "to": "0xe111180000d2663c0091e4f400237545b87b996b",
-            "input": MATCH_ORDERS + calldata.hex()}
+    return {
+        "hash": tx,
+        "to": "0xe111180000d2663c0091e4f400237545b87b996b",
+        "input": MATCH_ORDERS + calldata.hex(),
+    }
 
 
 async def test_pending_fill_is_copied_and_its_confirmed_log_is_not(env):
@@ -277,3 +280,49 @@ async def test_market_catalog_lets_the_first_fill_in_a_market_skip_gamma(env, mo
     assert sig.status == SignalStatus.EXECUTED
     assert calls == [], "token map and validated metadata were already warm"
     assert await rt.catalog.tick() == 0, "a listing is warmed once"
+
+
+async def confirmations(rt):
+    return [ev.confirmation for ev in await rows(rt, SourceEvent)]
+
+
+async def test_confirmed_log_marks_the_pending_sighting_confirmed(env):
+    rt, clock, world, _w, _rest = env
+    await rt.feed.tick()
+    await rt.feed.handle_pending(pending_match(WALLET_A, tx="0xc1"))
+    await rt.feed.drain()
+    assert await confirmations(rt) == ["PENDING"]
+    append_fill(world, clock, tx="0xc1")
+    assert await rt.feed.tick() == 0, "the confirmed log is not copied again"
+    assert await confirmations(rt) == ["CONFIRMED"]
+
+
+@pytest.mark.parametrize(
+    ("receipt", "wait_s", "outcome"),
+    [
+        ({"status": "0x0"}, 120, "REVERTED"),
+        (None, 601, "DROPPED"),
+        ({"status": "0x1"}, 120, "CONFIRMED"),
+    ],
+)
+async def test_unconfirmed_pending_fill_is_settled_from_its_receipt(env, receipt, wait_s, outcome):
+    rt, clock, world, _w, _rest = env
+    await rt.feed.tick()
+    await rt.feed.handle_pending(pending_match(WALLET_A, tx="0xr1"))
+    await rt.feed.drain()
+    if receipt is not None:
+        world.receipts["0xr1"] = receipt
+    clock.advance(60)
+    await rt.feed.tick()
+    assert await confirmations(rt) == ["PENDING"], "too early to check"
+    clock.advance(wait_s)
+    await rt.feed.tick()
+    assert await confirmations(rt) == [outcome]
+    flagged = [e for e in await rows(rt, SystemEvent) if e.kind.startswith("PENDING_FILL_")]
+    if outcome == "CONFIRMED":
+        assert flagged == []
+    else:
+        [event] = flagged
+        assert event.kind == f"PENDING_FILL_{outcome}" and event.level == "ERROR"
+        [sig] = await rows(rt, CopySignal)
+        assert event.data["signal_ids"] == [sig.id]

@@ -336,6 +336,9 @@ class SourceEvent(Base):
     is_combo: Mapped[bool] = mapped_column(default=False)
     is_backfill: Mapped[bool] = mapped_column(default=False)
     source: Mapped[str] = mapped_column(String(8), default="api", server_default="api")
+    confirmation: Mapped[str | None] = mapped_column(String(10))
+    """Mempool rows only: PENDING until their transaction lands, then CONFIRMED, REVERTED
+    or DROPPED (never mined)."""
     """Where the row was first seen: ``chain`` (exchange logs) or ``api`` (history import)."""
 
 

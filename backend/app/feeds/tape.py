@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import datetime
 
-from sqlalchemy import select, text
+from sqlalchemy import select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -63,6 +63,7 @@ class TradeTape:
                 "is_combo": r.is_combo,
                 "is_backfill": r.block_ts < followed_since,
                 "source": source,
+                "confirmation": "PENDING" if source == "mempool" else None,
             }
             for r in rows
         ]
@@ -73,6 +74,18 @@ class TradeTape:
                 {"w": wallet_id},
             )
             hashes = {v["tx_hash"] for v in values if v["type"] == "TRADE" and v["tx_hash"]}
+            if hashes and source != "mempool":
+                # A transaction is atomic: any confirmed row of it confirms its pending ones.
+                await s.execute(
+                    update(SourceEvent)
+                    .where(
+                        SourceEvent.wallet_id == wallet_id,
+                        SourceEvent.source == "mempool",
+                        SourceEvent.confirmation == "PENDING",
+                        SourceEvent.tx_hash.in_(hashes | {h.lower() for h in hashes}),
+                    )
+                    .values(confirmation="CONFIRMED")
+                )
             if hashes:
                 taken = set(
                     (
