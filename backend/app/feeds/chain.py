@@ -28,6 +28,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.clock import Clock
+from app.core.stages import Stage, StageTimer
 from app.db.models import FeedCursor, SourceEvent, WatchedWallet
 from app.domain.events import ActivityType, SourceActivity, assign_event_keys
 from app.domain.market import MarketInfo
@@ -132,8 +133,12 @@ class ChainFeed:
                     for i, params in enumerate((["newHeads"], ["logs", fill_filter(makers)])):
                         await ws.send(
                             json.dumps(
-                                {"jsonrpc": "2.0", "id": i + 1, "method": "eth_subscribe",
-                                 "params": params}
+                                {
+                                    "jsonrpc": "2.0",
+                                    "id": i + 1,
+                                    "method": "eth_subscribe",
+                                    "params": params,
+                                }
                             )
                         )
                     self._stream_wallets = frozenset(makers)
@@ -158,6 +163,7 @@ class ChainFeed:
         """Apply one subscription message; returns new trades ingested (0 for heads/acks)."""
         if msg.get("method") != "eth_subscription":
             return 0
+        timer = StageTimer()
         result = msg["params"]["result"]
         if "logIndex" in result:
             if result.get("removed"):
@@ -166,7 +172,7 @@ class ChainFeed:
             wallet = self._wallets.get(fill.maker) if fill else None
             if fill is None or wallet is None:
                 return 0
-            return await self._ingest(wallet, [fill])
+            return await self._ingest(wallet, [fill], timer)
         if "number" in result and "timestamp" in result:
             self._rpc.remember_block(int(result["number"], 16), int(result["timestamp"], 16))
         return 0
@@ -183,17 +189,21 @@ class ChainFeed:
         if head >= self._next_block:
             to_block = min(head, self._next_block + self._max_range - 1)
             fills = await self._rpc.fills(self._next_block, to_block, list(self._wallets))
+            timer = StageTimer()
             by_wallet: dict[str, list[ChainFill]] = {}
             for f in fills:
                 by_wallet.setdefault(f.maker, []).append(f)
             for address, wallet_fills in by_wallet.items():
-                ingested += await self._ingest(self._wallets[address], wallet_fills)
+                ingested += await self._ingest(self._wallets[address], wallet_fills, timer)
             await self._save_cursor(to_block + 1)
         self.last_tick_at = self._clock.now()
         return ingested
 
     # ------------------------------------------------------------------ ingestion
-    async def _ingest(self, wallet: WatchedWallet, fills: list[ChainFill]) -> int:
+    async def _ingest(
+        self, wallet: WatchedWallet, fills: list[ChainFill], timer: StageTimer | None = None
+    ) -> int:
+        timer = timer or StageTimer()
         rows: list[SourceActivity] = []
         for f in fills:
             row = await self._to_activity(wallet, f)
@@ -214,16 +224,19 @@ class ChainFeed:
         )
         if not new:
             return 0
+        timer.mark(Stage.TAPED)
         live = [ev for ev in new if not ev.is_backfill]
         for ev in live:
             self._bus.publish("source_trade", {"id": ev.id})
             self.last_lag_s = (detected_at - ev.block_ts).total_seconds()
-        self._dispatch(wallet, new)
+        self._dispatch(wallet, [(ev, timer.fork()) for ev in new])
         if live:
             await self._touch_last_trade(wallet.id, max(ev.block_ts for ev in live))
         return len(new)
 
-    def _dispatch(self, wallet: WatchedWallet, events: list[SourceEvent]) -> None:
+    def _dispatch(
+        self, wallet: WatchedWallet, events: list[tuple[SourceEvent, StageTimer]]
+    ) -> None:
         """Copy ``events`` without holding up detection.
 
         A wallet's copies run in ingestion order (a SELL must see the BUY's lots); different
@@ -240,13 +253,16 @@ class ChainFeed:
         task.add_done_callback(forget)
 
     async def _copy(
-        self, prev: asyncio.Task[None] | None, wallet: WatchedWallet, events: list[SourceEvent]
+        self,
+        prev: asyncio.Task[None] | None,
+        wallet: WatchedWallet,
+        events: list[tuple[SourceEvent, StageTimer]],
     ) -> None:
         if prev is not None:
             await asyncio.wait({prev})
-        for ev in events:
+        for ev, timer in events:
             try:
-                await self._engine.on_trade(ev, wallet)
+                await self._engine.on_trade(ev, wallet, timer)
             except Exception:  # recorded; restart recovery resumes PENDING signals
                 log.exception("copy failed", extra={"source_event_id": ev.id})
         self._bus.publish("wallet", {"id": wallet.id})

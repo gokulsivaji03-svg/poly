@@ -412,6 +412,8 @@ class CopySignal(Base):
     detection_lag_ms: Mapped[int | None]
     signal_latency_ms: Mapped[int | None]
     exec_latency_ms: Mapped[int | None]
+    stage_us: Mapped[dict[str, Any] | None]
+    """Monotonic µs from fill receipt to each ``app.core.stages.Stage`` this signal reached."""
 
 
 # ---------------------------------------------------------------------------- hedges

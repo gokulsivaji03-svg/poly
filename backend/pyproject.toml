@@ -41,6 +41,8 @@ module-root = ""
 testpaths = ["../tests/backend"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+addopts = "-m 'not bench'"
+markers = ["bench: latency benchmark; run with -m bench -s"]
 filterwarnings = ["error::RuntimeWarning"]
 
 [tool.ruff]
@@ -55,6 +57,7 @@ ignore = ["S101", "RUF012", "B008"]
 
 [tool.ruff.lint.per-file-ignores]
 "../tests/**" = ["S", "DTZ"]
+"../tests/**/test_*_bench.py" = ["S", "DTZ", "T201"]
 "scripts/**" = ["T20"]
 "alembic/**" = ["E501", "W291"]
 

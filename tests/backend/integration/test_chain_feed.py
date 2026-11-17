@@ -7,6 +7,7 @@ from decimal import Decimal
 import pytest
 import respx
 from app.core.clock import ManualClock
+from app.core.stages import Stage
 from app.db.models import CopySignal, FeedCursor, SignalStatus, SourceEvent, SystemEvent
 from scenario import (
     NO,
@@ -82,6 +83,9 @@ async def test_backstop_copies_fill_once_and_records_chain_values(env):
     await rt.feed.drain()
     [sig] = await rows(rt, CopySignal)
     assert sig.status == SignalStatus.EXECUTED and sig.detection_lag_ms == 2000
+    timed = [sig.stage_us[s.value] for s in Stage if s.value in sig.stage_us]
+    assert set(sig.stage_us) == {s.value for s in Stage} - {"received"}
+    assert timed == sorted(timed), "stages are marked in pipeline order"
     [ev] = await rows(rt, SourceEvent)
     assert ev.source == "chain" and (ev.size, ev.price) == (D("500"), D("0.4"))
 
@@ -195,7 +199,7 @@ async def test_push_does_not_wait_for_copy_and_keeps_wallet_order(env, monkeypat
     release = asyncio.Event()
     started: list[str] = []
 
-    async def on_trade(ev, wallet):
+    async def on_trade(ev, wallet, timer=None):
         started.append(ev.tx_hash)
         if ev.tx_hash == "0xa1":
             await release.wait()

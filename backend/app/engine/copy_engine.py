@@ -24,6 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.clock import Clock
+from app.core.stages import Stage, StageTimer
 from app.db.models import (
     CopySignal,
     LotOrigin,
@@ -71,10 +72,17 @@ class CopyEngine:
         self.account_id = account_id
         self._market_locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
-    async def on_trade(self, ev: SourceEvent, wallet: WatchedWallet) -> CopySignal | None:
-        """Decide and execute the copy of one ingested source event. Idempotent."""
+    async def on_trade(
+        self, ev: SourceEvent, wallet: WatchedWallet, timer: StageTimer | None = None
+    ) -> CopySignal | None:
+        """Decide and execute the copy of one ingested source event. Idempotent.
+
+        ``timer`` carries marks from fill receipt; without one (restart recovery, replay)
+        stages are timed from this call.
+        """
         if ev.type != "TRADE" or ev.side not in ("BUY", "SELL") or ev.is_backfill:
             return None  # non-trades and pre-follow history are recorded, never copied
+        timer = timer or StageTimer()
         sig = await self._journal.open(ev)
         if sig.status != SignalStatus.PENDING:
             return sig
@@ -82,25 +90,36 @@ class CopyEngine:
         followed = wallet.removed_at is None and wallet.follow
         skip = screen(source_trade(ev), followed=followed, settings=settings)
         if skip is not None:
-            return await self._journal.finish(sig, SignalStatus.SKIPPED, [skip])
+            return await self._journal.finish(sig, SignalStatus.SKIPPED, [skip], timer=timer)
         try:
             if ev.side == "BUY":
                 async with self._market_locks[ev.condition_id]:
-                    return await self._buy(sig, ev, wallet, settings)
-            return await self._sell(sig, ev, wallet, settings)
+                    return await self._buy(sig, ev, wallet, settings, timer)
+            return await self._sell(sig, ev, wallet, settings, timer)
         except Exception as exc:
             log.exception("copy signal failed", extra={"signal_id": sig.id})
             return await self._journal.finish(
-                sig, SignalStatus.FAILED, [Reason("INTERNAL_ERROR", f"{type(exc).__name__}: {exc}")]
+                sig,
+                SignalStatus.FAILED,
+                [Reason("INTERNAL_ERROR", f"{type(exc).__name__}: {exc}")],
+                timer=timer,
             )
 
     async def _buy(
-        self, sig: CopySignal, ev: SourceEvent, wallet: WatchedWallet, settings: StrategySettings
+        self,
+        sig: CopySignal,
+        ev: SourceEvent,
+        wallet: WatchedWallet,
+        settings: StrategySettings,
+        timer: StageTimer,
     ) -> CopySignal:
+        timer.mark(Stage.STARTED)
         inputs = await self._contexts.buy(ev, wallet, settings)
+        timer.mark(Stage.CONTEXT)
         intent = decide_buy(inputs.strategy)
         if isinstance(intent, Skip):
-            return await self._finish_skip(sig, intent)
+            timer.mark(Stage.DECIDED)
+            return await self._finish_skip(sig, intent, timer)
         trade = inputs.strategy.trade
         risk = check_buy(
             budget=intent.budget,
@@ -115,6 +134,7 @@ class CopyEngine:
             trading_halted=settings.trading_halted,
             buys_in_market=inputs.buys_in_market,
         )
+        timer.mark(Stage.DECIDED)
         reasons = [*intent.reasons, *risk.reasons]
         record = {
             **intent.record,
@@ -122,7 +142,9 @@ class CopyEngine:
             "limit_price": risk.limit_price,
         }
         if risk.rejected:
-            return await self._journal.finish(sig, SignalStatus.REJECTED, reasons, **record)
+            return await self._journal.finish(
+                sig, SignalStatus.REJECTED, reasons, timer=timer, **record
+            )
         reservation = await self._ledger.reserve(
             self.account_id,
             risk.approved_budget,
@@ -130,12 +152,13 @@ class CopyEngine:
             key=f"sig-{sig.id}",
             purpose="COPY_BUY",
         )
+        timer.mark(Stage.RESERVED)
         if reservation is None:
             short = Reason(
                 "INSUFFICIENT_CASH", "Available unreserved cash is below the approved budget."
             )
             return await self._journal.finish(
-                sig, SignalStatus.REJECTED, [*reasons, short], **record
+                sig, SignalStatus.REJECTED, [*reasons, short], timer=timer, **record
             )
         decided_at = self._clock.now()
         sig = await self._journal.save(sig, decided_at=decided_at, **record)
@@ -163,26 +186,41 @@ class CopyEngine:
             ),
             settings,
         )
-        return await self._journal.record_execution(sig, result, reasons, decided_at)
+        timer.mark(Stage.EXECUTED)
+        return await self._journal.record_execution(sig, result, reasons, decided_at, timer)
 
     async def _sell(
-        self, sig: CopySignal, ev: SourceEvent, wallet: WatchedWallet, settings: StrategySettings
+        self,
+        sig: CopySignal,
+        ev: SourceEvent,
+        wallet: WatchedWallet,
+        settings: StrategySettings,
+        timer: StageTimer,
     ) -> CopySignal:
+        timer.mark(Stage.STARTED)
         halted = halt_reason(settings)
         if halted is not None:
-            return await self._journal.finish(sig, SignalStatus.REJECTED, [halted])
+            timer.mark(Stage.DECIDED)
+            return await self._journal.finish(sig, SignalStatus.REJECTED, [halted], timer=timer)
         inputs = await self._contexts.sell(ev, wallet)
+        timer.mark(Stage.CONTEXT)
         intent = decide_sell(inputs.strategy, settings)
         if any(r.code == PAIR_UNWIND_REVIEW for r in intent.reasons):
             self._bus.publish(
                 "pair_unwind_review", {"condition_id": ev.condition_id, "token_id": ev.token_id}
             )
         if isinstance(intent, Skip):
-            return await self._finish_skip(sig, intent)
+            timer.mark(Stage.DECIDED)
+            return await self._finish_skip(sig, intent, timer)
         gate = check_sell(inputs.book, settings)
+        timer.mark(Stage.DECIDED)
         if gate.rejection is not None:
             return await self._journal.finish(
-                sig, SignalStatus.REJECTED, [*intent.reasons, gate.rejection], **intent.record
+                sig,
+                SignalStatus.REJECTED,
+                [*intent.reasons, gate.rejection],
+                timer=timer,
+                **intent.record,
             )
         decided_at = self._clock.now()
         sig = await self._journal.save(
@@ -210,10 +248,15 @@ class CopyEngine:
             ),
             settings,
         )
-        return await self._journal.record_execution(sig, result, [*intent.reasons], decided_at)
+        timer.mark(Stage.EXECUTED)
+        return await self._journal.record_execution(
+            sig, result, [*intent.reasons], decided_at, timer
+        )
 
-    async def _finish_skip(self, sig: CopySignal, skip: Skip) -> CopySignal:
-        return await self._journal.finish(sig, skip.status, [*skip.reasons], **skip.record)
+    async def _finish_skip(self, sig: CopySignal, skip: Skip, timer: StageTimer) -> CopySignal:
+        return await self._journal.finish(
+            sig, skip.status, [*skip.reasons], timer=timer, **skip.record
+        )
 
     async def _execute(self, req: ExecutionRequest, settings: StrategySettings) -> ExecutionResult:
         return await self._exec.execute(
