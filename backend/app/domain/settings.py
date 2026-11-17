@@ -61,7 +61,9 @@ class Model(BaseModel):
 
 class SizingSettings(Model):
     mode: SizingMode = SizingMode.PROPORTIONAL
-    multiplier: Dec = Field(default=Decimal("1"), gt=0, le=Decimal("10"))
+    multiplier: Dec = Field(default=Decimal("0.25"), gt=0, le=Decimal("10"))
+    """Scales proportional copies. A quarter of the source's allocation rode out joseph's
+    drawdowns in replay where full size went broke; see docs/STRATEGY.md."""
     fixed_amount_usd: Dec = Field(default=Decimal("10"), gt=0)
     fixed_pct_of_user: Dec = Field(default=Decimal("0.02"), gt=0, le=1)
     source_multiple: Dec = Field(default=Decimal("0.01"), gt=0)

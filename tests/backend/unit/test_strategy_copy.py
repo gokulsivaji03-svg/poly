@@ -28,7 +28,7 @@ from app.strategy.copy import (
 )
 from app.strategy.sizing import size_copy
 
-from factories import COND, NO, NOW, YES, D, book, market
+from factories import COND, FULL_SIZE, NO, NOW, YES, D, book, market
 
 
 def trade(**kw) -> SourceTrade:
@@ -69,7 +69,7 @@ def buy_ctx(**kw) -> BuyContext:
         bankroll=D("500"),
         source_equity=src_equity(),
         source_sold_after=False,
-        sizing=SizingSettings(),
+        sizing=SizingSettings(**FULL_SIZE),
     )
     base.update(kw)
     return BuyContext(**base)

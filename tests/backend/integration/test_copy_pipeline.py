@@ -46,7 +46,10 @@ async def env(sm, world):
         engine = create_async_engine(TEST_DB)
         rt = await make_runtime(TEST_DB, clock, rest, engine)
         await rt.settings.update(
-            {"paper": {"starting_bankroll_usd": "500", "execution_delay_ms": 0}}
+            {
+                "paper": {"starting_bankroll_usd": "500", "execution_delay_ms": 0},
+                "sizing": {"multiplier": "1"},
+            }
         )
         await rt.ledger.reset_account(rt.account_id, D("500"))
         yield rt, clock, rest

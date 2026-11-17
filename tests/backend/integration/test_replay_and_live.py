@@ -96,6 +96,7 @@ async def rt(sm, world):
     with respx.mock(assert_all_called=False) as router:
         world.install(router)
         runtime = await make_runtime(TEST_DB, clock, FakeRest(clock), create_async_engine(TEST_DB))
+        await runtime.settings.update({"sizing": {"multiplier": "1"}})
         yield runtime
         await runtime.stop()
 
