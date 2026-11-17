@@ -264,12 +264,15 @@ class CopyEngine:
         )
 
     async def _execute(self, req: ExecutionRequest, settings: StrategySettings) -> ExecutionResult:
-        return await self._exec.execute(
-            req,
-            delay_ms=settings.paper.execution_delay_ms,
-            slippage_bps=settings.paper.extra_slippage_bps,
-            share_step=settings.paper.share_step,
-        )
+        try:
+            return await self._exec.execute(
+                req,
+                delay_ms=settings.paper.execution_delay_ms,
+                slippage_bps=settings.paper.extra_slippage_bps,
+                share_step=settings.paper.share_step,
+            )
+        finally:
+            self._contexts.warm()
 
     async def resume_unfinished(self) -> int:
         """Restart recovery: finish signals left PENDING and events never turned into signals."""

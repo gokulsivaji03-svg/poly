@@ -11,11 +11,11 @@ import asyncio
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.money import ZERO
-from app.db.models import Lot, LotOrigin, Order, OrderKind, OrderStatus, SourceEvent, WatchedWallet
+from app.db.models import LotOrigin, SourceEvent, WatchedWallet
 from app.domain.market import MarketInfo, OrderBook
 from app.domain.settings import SizingSettings, StrategySettings
 from app.engine.portfolio import PortfolioReader
@@ -76,15 +76,14 @@ class ContextLoader:
     async def buy(
         self, ev: SourceEvent, wallet: WatchedWallet, settings: StrategySettings
     ) -> BuyInputs:
-        sold_after, market, (view, day_pnl), estimate, book, buys = await asyncio.gather(
+        sold_after, market, (ledger, view, day_pnl), estimate, book = await asyncio.gather(
             self._source_sold_after(ev),
             self._md.get_market(ev.condition_id),
-            self._portfolio.view_with_day_pnl(),
+            self._portfolio.copy_inputs(),
             self._est.estimate_at(
                 ev.wallet_id, wallet.address, ev.block_ts, exclude_event_id=ev.id
             ),
             self._md.get_book(ev.token_id),
-            self._buys_in_market(ev.condition_id),
         )
         return BuyInputs(
             strategy=BuyContext(
@@ -97,17 +96,28 @@ class ContextLoader:
             ),
             snapshot=view.risk_snapshot(day_pnl),
             book=book,
-            buys_in_market=buys,
+            buys_in_market=ledger.copy_buys.get(ev.condition_id, 0),
         )
 
     async def sell(self, ev: SourceEvent, wallet: WatchedWallet) -> SellInputs:
-        lots, after, book, market = await asyncio.gather(
-            self._copy_lots(ev.token_id, wallet.address),
+        ledger, after, book, market = await asyncio.gather(
+            self._portfolio.snapshot(),
             self._est.source_position_size(wallet, ev.token_id),
             self._md.get_book(ev.token_id),
             self._md.get_market(ev.condition_id),
         )
+        lots = tuple(
+            CopyLot(lt.id, lt.shares_remaining, lt.matched_shares)
+            for lt in ledger.lots
+            if lt.token_id == ev.token_id
+            and lt.source_wallet == wallet.address
+            and lt.origin == LotOrigin.COPY
+        )
         return SellInputs(SellContext(source_trade(ev), lots, after), book, market)
+
+    def warm(self) -> None:
+        """After an execution wrote the ledger: reload the snapshot the next copy reads."""
+        self._portfolio.refresh_soon()
 
     async def _source_sold_after(self, ev: SourceEvent) -> bool:
         async with self._sm() as s:
@@ -123,32 +133,3 @@ class ContextLoader:
                 .limit(1)
             )
         return hit is not None
-
-    async def _buys_in_market(self, condition_id: str) -> int:
-        async with self._sm() as s:
-            n = await s.scalar(
-                select(func.count(Order.id)).where(
-                    Order.account_id == self._portfolio.account_id,
-                    Order.kind == OrderKind.COPY_BUY,
-                    Order.condition_id == condition_id,
-                    Order.status.in_([OrderStatus.FILLED, OrderStatus.PARTIALLY_FILLED]),
-                )
-            )
-        return n or 0
-
-    async def _copy_lots(self, token_id: str, source_wallet: str) -> tuple[CopyLot, ...]:
-        async with self._sm() as s:
-            rows = (
-                await s.scalars(
-                    select(Lot)
-                    .where(
-                        Lot.account_id == self._portfolio.account_id,
-                        Lot.token_id == token_id,
-                        Lot.source_wallet == source_wallet,
-                        Lot.origin == LotOrigin.COPY,
-                        Lot.shares_remaining > 0,
-                    )
-                    .order_by(Lot.opened_at, Lot.id)
-                )
-            ).all()
-        return tuple(CopyLot(lt.id, lt.shares_remaining, lt.matched_shares) for lt in rows)
