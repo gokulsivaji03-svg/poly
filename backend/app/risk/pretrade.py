@@ -89,8 +89,10 @@ def check_buy(
     settings: RiskSettings,
     trading_halted: bool,
     buys_in_market: int,
+    wallet_headroom: Decimal | None = None,
 ) -> RiskDecision:
-    """``buys_in_market``: filled copy buys already made in ``condition_id``."""
+    """``buys_in_market``: filled copy buys already made in ``condition_id``.
+    ``wallet_headroom``: what this source wallet's slice of the bankroll has left, if split."""
     reasons: list[Reason] = []
     if trading_halted:
         return _reject(reasons, "TRADING_HALTED", "Strategies are paused or emergency-stopped.")
@@ -170,6 +172,7 @@ def check_buy(
         "MAX_TOTAL_EXPOSURE",
         "Capped by max total portfolio exposure",
     )
+    cap(wallet_headroom, "WALLET_SLICE", "Capped by this wallet's share of the bankroll")
     cap(
         portfolio.available_cash - settings.min_cash_reserve_usd,
         "CASH_RESERVE",

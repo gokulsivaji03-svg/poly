@@ -134,6 +134,7 @@ class CopyEngine:
             settings=settings.risk,
             trading_halted=settings.trading_halted,
             buys_in_market=inputs.buys_in_market,
+            wallet_headroom=inputs.wallet_headroom,
         )
         timer.mark(Stage.DECIDED)
         reasons = [*intent.reasons, *risk.reasons]

@@ -15,6 +15,7 @@ import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { useControl } from '@/features/controls'
 import {
+  BANKROLL_FIELDS,
   COPY_FIELDS,
   HEDGE_ACTIVATION_FIELDS,
   HEDGE_ADVANCED_FIELDS,
@@ -32,6 +33,7 @@ import { useSettings, useWallets } from '@/lib/queries'
 
 const ALL_FIELDS = [
   ...SIZING_FIELDS,
+  ...BANKROLL_FIELDS,
   ...RISK_FIELDS,
   ...COPY_FIELDS,
   ...HEDGE_ACTIVATION_FIELDS,
@@ -272,7 +274,7 @@ export function SettingsPage() {
         <div className="flex min-w-0 flex-col gap-3">
           <div className="grid gap-3 2xl:grid-cols-2">
             <Panel id="sizing" title="Sizing">
-              <FieldList fields={SIZING_FIELDS} form={form} />
+              <FieldList fields={[...SIZING_FIELDS, ...BANKROLL_FIELDS]} form={form} />
             </Panel>
             <Panel id="risk" title="Risk">
               <FieldList fields={RISK_FIELDS} form={form} />

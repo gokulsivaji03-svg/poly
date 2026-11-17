@@ -240,20 +240,8 @@ async def test_unknown_source_bankroll_skips(env, world):
     assert sig.source_equity_coverage == "UNAVAILABLE"
 
 
-async def test_simultaneous_trades_never_overspend(env, world):
-    rt, clock, _ = env
-    await rt.settings.update(
-        {
-            "sizing": {"mode": "FIXED_AMOUNT", "fixed_amount_usd": "100"},
-            "risk": {
-                "max_pct_per_trade": "1",
-                "max_position_usd": "10000",
-                "max_market_exposure_usd": "10000",
-                "max_total_exposure_pct": "1",
-                "min_cash_reserve_usd": "0",
-            },
-        }
-    )
+async def burst(rt, clock, world) -> None:
+    """Both wallets each fire four $100 copies in one block."""
     await add_and_snapshot(rt, WALLET_A, world=world)
     await add_and_snapshot(rt, WALLET_B, world=world)
     clock.advance(5)
@@ -272,6 +260,53 @@ async def test_simultaneous_trades_never_overspend(env, world):
             )
     assert await rt.feed.tick() == 8
     await rt.feed.drain()
+
+
+async def test_each_wallet_copies_within_its_half_of_the_bankroll(env, world):
+    rt, clock, _ = env
+    await rt.settings.update(
+        {
+            "sizing": {"mode": "FIXED_AMOUNT", "fixed_amount_usd": "100"},
+            "risk": {"min_cash_reserve_usd": "0"},
+        }
+    )
+    await burst(rt, clock, world)
+    async with rt.sm() as s:
+        rows = (
+            await s.execute(
+                select(SourceEvent.wallet_id, func.sum(CopySignal.filled_cost))
+                .join(SourceEvent, SourceEvent.id == CopySignal.source_event_id)
+                .where(CopySignal.status.in_([SignalStatus.EXECUTED, SignalStatus.PARTIAL]))
+                .group_by(SourceEvent.wallet_id)
+            )
+        ).all()
+    assert len(rows) == 2
+    for _, cost in rows:
+        assert D("200") < cost <= D("250"), "each wallet fills its $250 slice, never more"
+    sigs = await signals(rt)
+    assert any(r["code"] == "WALLET_SLICE" for sg in sigs for r in sg.reasons["items"])
+    assert await rt.ledger.verify(rt.account_id) == []
+
+
+async def test_simultaneous_trades_never_overspend(env, world):
+    rt, clock, _ = env
+    await rt.settings.update(
+        {
+            "sizing": {
+                "mode": "FIXED_AMOUNT",
+                "fixed_amount_usd": "100",
+                "split_across_wallets": False,
+            },
+            "risk": {
+                "max_pct_per_trade": "1",
+                "max_position_usd": "10000",
+                "max_market_exposure_usd": "10000",
+                "max_total_exposure_pct": "1",
+                "min_cash_reserve_usd": "0",
+            },
+        }
+    )
+    await burst(rt, clock, world)
     sigs = await signals(rt)
     executed = [sg for sg in sigs if sg.status == SignalStatus.EXECUTED]
     rejected = [sg for sg in sigs if sg.status == SignalStatus.REJECTED]

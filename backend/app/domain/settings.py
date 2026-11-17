@@ -68,6 +68,9 @@ class SizingSettings(Model):
     unknown_equity_policy: UnknownEquityPolicy = UnknownEquityPolicy.SKIP
     lower_bound_equity_policy: LowerBoundEquityPolicy = LowerBoundEquityPolicy.USE_CAPPED
     min_source_confidence: Dec = Field(default=Decimal("0.3"), ge=0, le=1)
+    split_across_wallets: bool = True
+    """Each followed wallet sizes from, and may hold at most, an equal slice of our equity,
+    so several wallets betting at once cannot commit more than the whole bankroll."""
 
 
 class RiskSettings(Model):

@@ -66,6 +66,7 @@ def buy_ctx(**kw) -> BuyContext:
         trade=trade(),
         market=market(),
         equity=D("500"),
+        bankroll=D("500"),
         source_equity=src_equity(),
         source_sold_after=False,
         sizing=SizingSettings(),

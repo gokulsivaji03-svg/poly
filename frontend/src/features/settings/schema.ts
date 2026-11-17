@@ -68,6 +68,11 @@ export const SIZING_FIELDS: FieldDef[] = [
   { section: 'sizing', key: 'min_source_confidence', label: 'Min equity confidence', kind: 'decimal', max: '1', help: '0–1; below this the trade is skipped' },
 ]
 
+/** Global sizing settings that a per-wallet override never changes. */
+export const BANKROLL_FIELDS: FieldDef[] = [
+  { section: 'sizing', key: 'split_across_wallets', label: 'Split bankroll across wallets', kind: 'bool', help: 'Each followed wallet sizes from, and holds at most, an equal share of your equity' },
+]
+
 export const RISK_FIELDS: FieldDef[] = [
   { section: 'risk', key: 'max_pct_per_trade', label: 'Max % per trade', kind: 'pct', positive: true, optional: true, max: '100', help: 'Of your equity' },
   { section: 'risk', key: 'max_position_usd', label: 'Max position', kind: 'usd', positive: true, optional: true, help: 'Per token' },
