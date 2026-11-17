@@ -353,3 +353,36 @@ async def test_paused_and_unfollowed_are_respected(env, world):
     assert await chain_trade(rt, world, clock, WALLET_A, tx="0xq") == 1
     assert len(await signals(rt)) == before + 1
     assert (await signals(rt))[-1].reasons["items"][-1]["code"] == "NOT_FOLLOWED"
+
+
+async def test_copies_below_the_minimum_carry_until_they_add_up_to_one_order(env, world):
+    rt, clock, _ = env
+    await rt.settings.update({"sizing": {"mode": "FIXED_AMOUNT", "fixed_amount_usd": "0.40"}})
+    await add_and_snapshot(rt, WALLET_A, world=world)
+    for i in range(3):
+        clock.advance(30)
+        await chain_trade(
+            rt, world, clock, WALLET_A, ago_s=2, size="10", price="0.40", tx=f"0xb{i}"
+        )
+    sigs = await signals(rt)
+    assert [s.status for s in sigs] == [
+        SignalStatus.SKIPPED,
+        SignalStatus.SKIPPED,
+        SignalStatus.EXECUTED,
+    ], [s.reasons for s in sigs]
+    assert [s.reasons["items"][-1]["code"] for s in sigs[:2]] == ["BATCHED", "BATCHED"]
+    placed = sigs[2]
+    assert placed.filled_cost == D("1.20"), "one order for all three copies"
+    assert any(r["code"] == "BATCH_PLACED" for r in placed.reasons["items"])
+    clock.advance(30)
+    await chain_trade(rt, world, clock, WALLET_A, ago_s=2, size="10", price="0.40", tx="0xb3")
+    clock.advance(30)
+    await chain_trade(
+        rt, world, clock, WALLET_A, ago_s=2, side="SELL", size="10", price="0.40", tx="0xb4"
+    )
+    clock.advance(30)
+    await chain_trade(rt, world, clock, WALLET_A, ago_s=2, size="10", price="0.40", tx="0xb5")
+    last = (await signals(rt))[-1]
+    assert last.status == SignalStatus.SKIPPED, "the sell ended the position, so no carry"
+    assert "$0.40 now pending" in last.reasons["items"][-1]["message"]
+    assert await rt.ledger.verify(rt.account_id) == []

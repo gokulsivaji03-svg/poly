@@ -12,11 +12,12 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import cast, func, or_, select
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.money import ZERO
-from app.db.models import LotOrigin, SourceEvent, WatchedWallet
+from app.db.models import CopySignal, LotOrigin, SignalStatus, SourceEvent, WatchedWallet
 from app.domain.market import MarketInfo, OrderBook
 from app.domain.settings import SizingSettings, StrategySettings
 from app.engine.portfolio import PortfolioReader
@@ -25,6 +26,9 @@ from app.services.equity_estimator import WalletEquityEstimator
 from app.services.market_data import MarketDataService
 from app.services.settings_service import deep_merge
 from app.strategy.copy import BuyContext, CopyLot, SellContext, SourceTrade
+
+BATCHED = "BATCHED"
+"""A copy below the minimum order, carried into this wallet's next copy of the token."""
 
 
 def source_trade(ev: SourceEvent) -> SourceTrade:
@@ -53,6 +57,8 @@ class BuyInputs:
     book: OrderBook | None
     buys_in_market: int
     wallet_headroom: Decimal | None
+    carried: Decimal
+    """Budget of this wallet's earlier copies of this token that were too small to place."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,7 +91,7 @@ class ContextLoader:
             (ledger, view, day_pnl),
             estimate,
             book,
-            followed,
+            (followed, carried),
         ) = await asyncio.gather(
             self._source_sold_after(ev),
             self._md.get_market(ev.condition_id),
@@ -94,7 +100,7 @@ class ContextLoader:
                 ev.wallet_id, wallet.address, ev.block_ts, exclude_event_id=ev.id
             ),
             self._md.get_book(ev.token_id),
-            self._followed(),
+            self._allotment(ev),
         )
         bankroll, headroom = view.equity, None
         if sizing.split_across_wallets:
@@ -122,6 +128,7 @@ class ContextLoader:
             book=book,
             buys_in_market=ledger.copy_buys.get(ev.condition_id, 0),
             wallet_headroom=headroom,
+            carried=carried,
         )
 
     async def sell(self, ev: SourceEvent, wallet: WatchedWallet) -> SellInputs:
@@ -144,15 +151,34 @@ class ContextLoader:
         """After an execution wrote the ledger: reload the snapshot the next copy reads."""
         self._portfolio.refresh_soon()
 
-    async def _followed(self) -> int:
+    async def _allotment(self, ev: SourceEvent) -> tuple[int, Decimal]:
+        """Followed wallets, and the target budgets of this wallet's BATCHED copies of this
+        token since the last filled copy buy or source sell of it, which either placed the
+        carry or ended the position."""
+        mine = (CopySignal.wallet_id == ev.wallet_id, CopySignal.token_id == ev.token_id)
         async with self._sm() as s:
-            return (
-                await s.scalar(
-                    select(func.count())
-                    .select_from(WatchedWallet)
-                    .where(WatchedWallet.follow.is_(True), WatchedWallet.removed_at.is_(None))
+            followed = await s.scalar(
+                select(func.count())
+                .select_from(WatchedWallet)
+                .where(WatchedWallet.follow.is_(True), WatchedWallet.removed_at.is_(None))
+            )
+            since = await s.scalar(
+                select(func.max(CopySignal.id)).where(
+                    *mine,
+                    or_(
+                        CopySignal.side == "SELL",
+                        CopySignal.status.in_([SignalStatus.EXECUTED, SignalStatus.PARTIAL]),
+                    ),
                 )
-            ) or 0
+            )
+            total = await s.scalar(
+                select(func.sum(CopySignal.target_budget)).where(
+                    *mine,
+                    CopySignal.id > (since or 0),
+                    cast(CopySignal.reasons, JSONB).contains({"items": [{"code": BATCHED}]}),
+                )
+            )
+        return followed or 0, total or ZERO
 
     async def _source_sold_after(self, ev: SourceEvent) -> bool:
         """A SELL already seen when this BUY was detected. Never a later one: a replay holds

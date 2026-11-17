@@ -80,7 +80,16 @@ def test_insufficient_cash_caps_to_available_minus_reserve():
 
 def test_rejects_when_no_cash_left():
     d = run("40", portfolio=snap(cash=D("30"), reserved=D("10")), min_cash_reserve_usd=D("25"))
-    assert d.rejected and d.reject_code == "BELOW_MIN_ORDER"
+    assert d.rejected and d.reject_code == "CAPPED_BELOW_MIN_ORDER"
+
+
+def test_a_copy_too_small_itself_is_told_apart_from_one_cut_down_by_limits():
+    small = run("0.50")
+    assert small.reject_code == "BELOW_MIN_ORDER", "batchable: the copy itself is small"
+    venue = run("2", b=book(asks=[("0.50", "1000")], min_order_size="5"))
+    assert venue.reject_code == "BELOW_MIN_ORDER", "4 shares is under the venue's 5"
+    cut = run("40", portfolio=snap(cash=D("25.50")), min_cash_reserve_usd=D("25"))
+    assert cut.reject_code == "CAPPED_BELOW_MIN_ORDER", "not batchable: cash ran out"
 
 
 def test_rejects_stale_signal_and_halt_and_loss_limit():

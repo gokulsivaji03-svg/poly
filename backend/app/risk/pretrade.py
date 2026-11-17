@@ -198,10 +198,15 @@ def check_buy(
             f"Only ${depth:.2f} executable within limit {limit_price:.4f} "
             f"(min ${settings.min_liquidity_usd}).",
         )
-    if approved < settings.min_order_usd or approved <= ZERO:
+    minimum = max(settings.min_order_usd, book.min_order_size * book.best_ask)
+    if budget < minimum:
+        return _reject(
+            reasons, "BELOW_MIN_ORDER", f"Budget {budget:.2f} below minimum order ${minimum:.2f}."
+        )
+    if approved < minimum or approved <= ZERO:
         return _reject(
             reasons,
-            "BELOW_MIN_ORDER",
-            f"Approved budget {approved:.2f} below minimum order ${settings.min_order_usd}.",
+            "CAPPED_BELOW_MIN_ORDER",
+            f"Limits cut the budget to {approved:.2f}, below minimum order ${minimum:.2f}.",
         )
     return RiskDecision(approved, limit_price, False, tuple(reasons))

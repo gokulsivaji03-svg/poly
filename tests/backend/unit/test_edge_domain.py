@@ -240,7 +240,7 @@ def test_risk_tightest_cap_wins_across_all_caps():
 )
 def test_risk_negative_headroom_rejects_and_never_approves_negative(portfolio):
     d = risk("20", portfolio=portfolio, min_order_usd=D("0"))
-    assert d.rejected and d.reject_code == "BELOW_MIN_ORDER"
+    assert d.rejected and d.reject_code == "CAPPED_BELOW_MIN_ORDER"
     assert d.approved_budget == ZERO and d.limit_price is None
 
 

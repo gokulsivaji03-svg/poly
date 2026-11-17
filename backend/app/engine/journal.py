@@ -63,9 +63,7 @@ class SignalJournal:
                 .returning(CopySignal)
             )
             if sig is None:  # reprocessing: the signal was opened before
-                sig = await s.scalar(
-                    select(CopySignal).where(CopySignal.source_event_id == ev.id)
-                )
+                sig = await s.scalar(select(CopySignal).where(CopySignal.source_event_id == ev.id))
             assert sig is not None
         return sig
 
