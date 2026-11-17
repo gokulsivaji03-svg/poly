@@ -44,12 +44,6 @@ def ts(v: datetime | None) -> str | None:
     return v.isoformat() if v is not None else None
 
 
-def pct(a: Decimal | None, b: Decimal | None) -> Decimal | None:
-    if a is None or b is None or b == ZERO:
-        return None
-    return a / b
-
-
 # ------------------------------------------------------------------ portfolio
 def portfolio_summary(view: PortfolioView, day_pnl: Decimal) -> dict[str, Any]:
     return {
