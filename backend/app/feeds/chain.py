@@ -390,6 +390,11 @@ class ChainFeed:
             ingested += await self._ingest(wallet, [fill])
         return ingested
 
+    def remember_market(self, market: MarketInfo) -> None:
+        """Map ``market``'s tokens ahead of any fill, so its first fill skips Gamma."""
+        for t in market.tokens:
+            self._tokens.setdefault(t.token_id, market)
+
     async def _market_for(self, token_id: str) -> MarketInfo | None:
         market = self._tokens.get(token_id)
         if market is None:

@@ -138,7 +138,7 @@ class Supervisor:
 async def periodic(
     stop: asyncio.Event,
     interval_s: float,
-    fn: Callable[[], Awaitable[None]],
+    fn: Callable[[], Awaitable[object]],
     *,
     on_tick: Callable[[], None] | None = None,
 ) -> None:

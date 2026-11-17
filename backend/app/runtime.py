@@ -50,6 +50,7 @@ from app.services.equity_estimator import WalletEquityEstimator
 from app.services.event_bus import EventBus
 from app.services.hedge_scanner import HedgeScannerService
 from app.services.ledger import PortfolioLedger
+from app.services.market_catalog import MarketCatalog
 from app.services.market_data import MarketDataService
 from app.services.replay import ReplayService
 from app.services.settings_service import SettingsService
@@ -88,6 +89,7 @@ class Runtime:
     portfolio: PortfolioReader
     copy_engine: CopyEngine
     feed: ChainFeed
+    catalog: MarketCatalog
     observer: WalletObserver
     geoblock: GeoblockChecker
     hedger: HedgeScannerService
@@ -218,6 +220,7 @@ class Runtime:
             portfolio=portfolio,
             copy_engine=copy_engine,
             feed=feed,
+            catalog=MarketCatalog(meta, feed, market_data),
             observer=observer,
             geoblock=geoblock,
             gate=gate,
@@ -237,6 +240,12 @@ class Runtime:
         sup.on_leader = self.recover
         sup.add("chain_feed", self.feed.run)
         self.feed.on_tick = lambda: sup.heartbeat("chain_feed")
+        sup.add(
+            "market_catalog",
+            lambda stop: periodic(
+                stop, 30, self.catalog.tick, on_tick=lambda: sup.heartbeat("market_catalog")
+            ),
+        )
         sup.add("wallet_observer", self.observer.run)
         self.observer.on_tick = lambda: sup.heartbeat("wallet_observer")
         if self.stream is not None:

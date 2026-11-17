@@ -256,3 +256,24 @@ async def test_pending_fills_of_unfollowed_wallets_are_ignored(env):
     await rt.feed.tick()
     assert await rt.feed.handle_pending(pending_match("0x" + "99" * 20, tx="0xp2")) == 0
     assert await rows(rt, SourceEvent) == []
+
+
+async def test_market_catalog_lets_the_first_fill_in_a_market_skip_gamma(env, monkeypatch):
+    rt, clock, world, _w, _rest = env
+    assert await rt.catalog.tick() == 1
+    calls: list[str] = []
+    for name in ("fetch", "fetch_by_token"):
+        original = getattr(rt.feed._meta, name)
+
+        async def counted(*args, _name=name, _original=original, **kwargs):
+            calls.append(_name)
+            return await _original(*args, **kwargs)
+
+        monkeypatch.setattr(rt.feed._meta, name, counted)
+    append_fill(world, clock)
+    assert await rt.feed.tick() == 1
+    await rt.feed.drain()
+    [sig] = await rows(rt, CopySignal)
+    assert sig.status == SignalStatus.EXECUTED
+    assert calls == [], "token map and validated metadata were already warm"
+    assert await rt.catalog.tick() == 0, "a listing is warmed once"
