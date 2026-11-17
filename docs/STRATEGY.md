@@ -45,13 +45,13 @@ Same simulation, 0.5¢ premium, $1,000 bankroll. `--max-entry-price` skips buys 
 | filter | return | max drawdown |
 |---|---|---|
 | none | +226% | 44% |
-| max entry 0.75 (app default) | +174% | 48% |
-| max entry 0.90 | +232% | 43% |
+| max entry 0.75 | +174% | 48% |
+| max entry 0.90 (app default) | +232% | 43% |
 | min source $250 | +212% | 44% |
 | min source $1,000 | +157% | 39% |
 | min source $5,000 | +43% | 26% |
 
-The default entry cap costs this sharp about 52 points, because it skips favorites between 75¢ and 90¢ that the sharp gets right. A 0.90 cap keeps them and still drops near-certain buys, where the upside is a few cents. Size filters only lower the return, so small source trades carry edge too. The app default stays at 0.75 until more wallets are tested. One wallet is not enough to change it for everyone. The overnight paper account uses 0.90.
+A 0.75 cap costs this sharp about 58 points, because it skips favorites between 75¢ and 90¢ that the sharp gets right. The app default, `RiskSettings.max_entry_price = 0.90`, keeps them and still drops near-certain buys, where the upside is a few cents. It beats no cap by 6 points here. Size filters only lower the return, so small source trades carry edge too.
 
 ## Hedging gives the edge away
 
