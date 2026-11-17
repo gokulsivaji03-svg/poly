@@ -8,6 +8,7 @@ import { Num, Unavailable } from '@/components/common/num'
 import { KV, PageHeader, Panel, Stat } from '@/components/common/panel'
 import { EmptyState, ErrorState, SkeletonLines } from '@/components/common/states'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { StageLatency } from '@/features/stage-latency'
 import type { SystemEvent, SystemHealth, Venue, WorkerStatus } from '@/lib/api'
 import { useSystemEvents, useSystemHealth } from '@/lib/queries'
 import { useRealtime } from '@/lib/realtime-context'
@@ -150,6 +151,16 @@ function Metrics({ h }: { h: SystemHealth }) {
         value={m.ws_connected == null ? <Unavailable /> : m.ws_connected ? <span className="text-pos">connected</span> : <span className="text-neg">down</span>}
         sub={m.ws_reconnects != null ? `${m.ws_reconnects} reconnects` : undefined}
       />
+      <Stat
+        label="Chain log stream"
+        value={m.chain_stream_connected == null ? <Unavailable /> : m.chain_stream_connected ? <span className="text-pos">connected</span> : <span className="text-neg">down</span>}
+        sub={m.chain_stream_reconnects != null ? `${m.chain_stream_reconnects} reconnects` : undefined}
+      />
+      <Stat
+        label="Mempool stream"
+        value={m.mempool_stream_connected == null ? <Unavailable /> : m.mempool_stream_connected ? <span className="text-pos">connected</span> : <span className="text-neg">down</span>}
+        sub={m.mempool_stream_reconnects != null ? `${m.mempool_stream_reconnects} reconnects` : undefined}
+      />
       <Stat label="Terminal stream" value={<span className={status.state === 'connected' ? 'text-pos' : 'text-warn'}>{status.state}</span>} />
       <Stat label="HTTP errors 5m" value={<Num value={m.http_errors_5m} kind="int" />} />
       <Stat label="Last chain pass" value={<TimeCell iso={m.last_poll_at} relative />} />
@@ -182,6 +193,7 @@ export function SystemPage() {
       ) : (
         <>
           <Metrics h={h} />
+          <StageLatency stages={h.metrics.copy_stages ?? []} />
           <div className="grid gap-3 md:grid-cols-2">
             {h.venues.map((v) => (
               <VenueCard key={v.id} v={v} />

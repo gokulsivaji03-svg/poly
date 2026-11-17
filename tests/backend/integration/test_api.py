@@ -121,6 +121,8 @@ async def test_controls_and_dashboard(client):
     assert reset.json()["equity"] == "750"
     health = (await client.get("/api/system/health", headers=h)).json()
     assert health["ledger_ok"] is True and health["mode"] == "PAPER"
+    assert health["metrics"]["copy_stages"] == [], "no copies yet, no stage timings"
+    assert health["metrics"]["mempool_stream_connected"] is False
     events = (await client.get("/api/system/events", headers=h)).json()["events"]
     assert {e["kind"] for e in events} >= {"EMERGENCY_STOP", "PAPER_RESET"}
     assert (await client.get("/api/positions", headers=h)).json() == {"positions": []}

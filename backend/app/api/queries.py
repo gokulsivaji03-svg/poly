@@ -12,6 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import aliased
 
 from app.core.money import ZERO, hours_between
+from app.core.stages import summarize
 from app.db.models import (
     CopySignal,
     EquitySnapshot,
@@ -570,6 +571,14 @@ async def system_metrics(rt: Runtime) -> dict[str, Any]:
                 .limit(500)
             )
         ).all()
+        stages = (
+            await sess.scalars(
+                select(CopySignal.stage_us)
+                .where(CopySignal.stage_us.is_not(None))
+                .order_by(CopySignal.id.desc())
+                .limit(500)
+            )
+        ).all()
         ords = (
             await sess.execute(
                 select(Order.exec_latency_ms, Order.book_age_ms)
@@ -595,6 +604,10 @@ async def system_metrics(rt: Runtime) -> dict[str, Any]:
         "chain_detection_lag_s": rt.feed.last_lag_s,
         "http_errors_5m": rt.http.stats.errors_since(300),
         "last_poll_at": ts(rt.feed.last_tick_at),
+        "copy_stages": [
+            {"stage": name, "n": p.n, "p50_ms": p.p50 / 1000, "p99_ms": p.p99 / 1000}
+            for name, p in summarize(s for s in stages if s).items()
+        ],
     }
 
 

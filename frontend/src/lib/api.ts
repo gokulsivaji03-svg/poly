@@ -511,6 +511,14 @@ export interface SystemMetrics {
   chain_detection_lag_s: number | null
   http_errors_5m: number | null
   last_poll_at: Iso | null
+  copy_stages: CopyStage[]
+}
+
+export interface CopyStage {
+  stage: string
+  n: number
+  p50_ms: number
+  p99_ms: number
 }
 
 export interface SystemHealth {
