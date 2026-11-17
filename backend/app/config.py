@@ -34,15 +34,23 @@ class Settings(BaseSettings):
     """Polygon JSON-RPC: the trade feed (exchange fill logs) and source collateral reads."""
     polygon_ws_url: str | None = None
     """WebSocket endpoint for pushed fill logs; defaults to polygon_rpc_url as wss://."""
-    chain_mempool: bool = True
+    chain_mempool: bool | None = None
     """Also copy from pending ``matchOrders`` transactions (median 0.8 s before their block,
-    measured by scripts/mempool_probe.py); needs a node serving full pending bodies."""
+    measured by scripts/mempool_probe.py); needs a node serving full pending bodies. Unset,
+    it is on for PAPER and REPLAY and off for LIVE: a pending transaction can still revert,
+    so live copying from the mempool is an explicit choice."""
     chain_poll_interval_s: float = Field(default=0.5, gt=0)
     """Backstop log polling interval while the WebSocket stream is down."""
     chain_backstop_interval_s: float = Field(default=2.0, gt=0)
     """Backstop log polling interval while the WebSocket stream is up."""
     chain_lookback_blocks: int = Field(default=30, ge=0)
     """Blocks re-read on the very first start (no persisted cursor yet)."""
+
+    @property
+    def mempool_enabled(self) -> bool:
+        if self.chain_mempool is not None:
+            return self.chain_mempool
+        return self.execution_mode is not ExecutionMode.LIVE
 
     @property
     def chain_ws_url(self) -> str | None:
