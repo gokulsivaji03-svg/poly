@@ -84,6 +84,7 @@ def parse_gamma_market(m: dict[str, Any], fetched_at: datetime) -> MarketInfo:
         closed=bool(m.get("closed", False)),
         accepting_orders=bool(m.get("acceptingOrders", True)),
         end_date=_parse_dt(m.get("endDate")),
+        closed_at=_parse_dt(m.get("closedTime")),
         fetched_at=fetched_at,
     )
 

@@ -1,13 +1,21 @@
-"""Historical replay: the real copy/hedge pipeline over recorded data, isolated in a schema.
+"""Historical replay: the real copy/hedge pipeline over past trades, isolated in a schema.
 
 Each run gets its own PostgreSQL schema (``replay_<id>``) created from the same metadata,
 populated with the recorded wallets, source events, equity snapshots and book snapshots up
-to the run's end, and driven by a ManualClock. Look-ahead is prevented structurally:
+to the run's end, and driven by a ManualClock.
 
-* books: only the latest snapshot recorded at or before the replay clock;
-* source equity: only snapshots observed at or before the replay clock;
+With ``prices="history"`` (the default) the run also loads what was never recorded here:
+the wallets' activity from the Data API, and Gamma metadata and CLOB minute bars for every
+traded token (see ``replay_history``). Recorded books win whenever they are newer than the
+last bar. Markets settle at their on-chain payouts once they close.
+
+Look-ahead is prevented structurally:
+
+* books: only the latest snapshot or minute bar at or before the replay clock;
+* source equity: only snapshots observed at or before the replay clock, except that a wallet
+  with none before the window starts from its earliest snapshot (reported in the summary);
 * source positions (for sell sizing): reconstructed from events at or before the clock;
-* market metadata: only metadata recorded with books at or before the replay clock.
+* market metadata: recorded metadata at or before the clock, else open until ``closed_at``.
 
 Results are written back to ``replay_runs`` and the schema is dropped. The live paper account
 is never touched.
@@ -21,7 +29,7 @@ import logging
 from collections import Counter
 from datetime import datetime, timedelta
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import func, select, text
@@ -49,11 +57,13 @@ from app.engine.copy_engine import CopyEngine
 from app.engine.journal import SignalJournal
 from app.engine.portfolio import PortfolioReader
 from app.execution.paper import PaperExecutor
+from app.feeds.tape import TradeTape
 from app.services.equity_estimator import WalletEquityEstimator
 from app.services.event_bus import EventBus
 from app.services.hedge_scanner import HedgeScannerService
 from app.services.ledger import PortfolioLedger
 from app.services.market_data import MarketDataService
+from app.services.replay_history import HistoryClient, MarketHistory
 from app.services.settings_service import SettingsService, deep_merge
 from app.services.system_events import SystemEventLog
 
@@ -68,6 +78,8 @@ class ReplayParams(BaseModel):
     wallet_ids: list[int] = Field(min_length=1, max_length=50)
     starting_bankroll: Decimal = Field(default=Decimal("1000"), gt=0)
     detection_delay_s: int = Field(default=2, ge=0, le=3600)
+    prices: Literal["history", "recorded"] = "history"
+    """``history`` fetches activity and minute bars; ``recorded`` uses only local recordings."""
     settings: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -149,6 +161,52 @@ class PointInTimeMetadata:
         return MarketInfo.model_validate(snap.asks["market"])
 
 
+SOURCE_LOOKBACK = timedelta(days=7)
+"""Activity fetched before the window, so sells size against positions opened earlier."""
+EQUITY_GRID = timedelta(minutes=30)
+"""Spacing of back-filled equity snapshots: confidence halves every 2 h from a snapshot."""
+
+
+class HistoryBooks:
+    """Recorded books, or the last minute bar where it is newer."""
+
+    def __init__(
+        self,
+        recorded: HistoricalBooks,
+        history: MarketHistory,
+        conditions: dict[str, str],
+        clock: ManualClock,
+    ) -> None:
+        self._recorded, self._history = recorded, history
+        self._conditions, self._clock = conditions, clock
+        self.bars_served = 0
+
+    async def fetch(self, token_ids: list[str]) -> dict[str, OrderBook]:
+        out = await self._recorded.fetch(token_ids)
+        now = self._clock.now()
+        for token in token_ids:
+            cid = self._conditions.get(token)
+            bar = self._history.book_at(token, cid, now) if cid else None
+            if bar is not None and (token not in out or bar.received_at > out[token].received_at):
+                out[token] = bar
+                self.bars_served += 1
+        return out
+
+
+class HistoryMetadata:
+    """Recorded metadata, else Gamma's as it stood at the replay clock."""
+
+    def __init__(
+        self, recorded: PointInTimeMetadata, history: MarketHistory, clock: ManualClock
+    ) -> None:
+        self._recorded, self._history, self._clock = recorded, history, clock
+
+    async def fetch(self, condition_id: str) -> MarketInfo | None:
+        return await self._recorded.fetch(condition_id) or self._history.market_at(
+            condition_id, self._clock.now()
+        )
+
+
 class ReplayEstimator(WalletEquityEstimator):
     point_in_time = True
 
@@ -181,11 +239,13 @@ class ReplayService:
         sm: async_sessionmaker[AsyncSession],
         live_market_data: MarketDataService,
         wall_clock: Any,
+        history: HistoryClient | None = None,
     ) -> None:
         self._engine = engine
         self._sm = sm
         self._live_md = live_market_data
         self._wall = wall_clock
+        self._history = history
         self._task: asyncio.Task[None] | None = None
 
     @property
@@ -232,13 +292,21 @@ class ReplayService:
             async with rengine.begin() as conn:
                 await conn.run_sync(Base.metadata.create_all)
             rsm = async_sessionmaker(rengine, expire_on_commit=False)
-            counts = await self._seed(rsm, params)
-            return await self._drive(rsm, params, counts)
+            counts = await self._seed(rsm, schema, params)
+            history = None
+            if params.prices == "history":
+                history, counts["fetched"], counts["equity_backfilled"] = await self._fetch(
+                    rsm, params
+                )
+            counts["events"] = await self._count_events(rsm, params)
+            return await self._drive(rsm, params, counts, history)
         finally:
             async with self._engine.begin() as conn:
                 await conn.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
 
-    async def _seed(self, rsm: async_sessionmaker[AsyncSession], p: ReplayParams) -> dict[str, int]:
+    async def _seed(
+        self, rsm: async_sessionmaker[AsyncSession], schema: str, p: ReplayParams
+    ) -> dict[str, int]:
         async with self._sm() as s:
             wallets = list(
                 (
@@ -315,15 +383,130 @@ class ReplayService:
             await s.flush()  # No ORM relationships: explicitly insert parents before events.
             s.add_all([*events, *snaps, *books])
             s.add(AppSettings(id=1, version=1, document=doc))
-        return {"events": sum(1 for e in events if e.block_ts >= p.start), "books": len(books)}
+            await s.flush()
+            # Copied rows keep their live ids; rows created during the run must not reuse them.
+            for table in (WatchedWallet, SourceEvent, WalletEquitySnapshot, BookSnapshot):
+                top = await s.scalar(select(func.max(table.id)))
+                await s.execute(
+                    text("SELECT setval(pg_get_serial_sequence(:t, 'id'), :v)"),
+                    {"t": f"{schema}.{table.__tablename__}", "v": max(top or 1, 1)},
+                )
+        return {"books": len(books)}
+
+    async def _fetch(
+        self, rsm: async_sessionmaker[AsyncSession], p: ReplayParams
+    ) -> tuple[MarketHistory, int, int]:
+        """Activity, metadata and minute bars into the replay schema; returns the history,
+        the activity rows taped and how many wallets had their equity back-filled."""
+        if self._history is None:
+            raise ValueError("price history is not configured on this server")
+        async with rsm() as s:
+            wallets = list((await s.scalars(select(WatchedWallet))).all())
+        tape = TradeTape(rsm)
+        fetched = 0
+        for w in wallets:
+            rows = await self._history.activity(w.address, p.start - SOURCE_LOOKBACK, p.end)
+            new = await tape.ingest(
+                w.id, rows, detected_at=p.start, followed_since=p.start, source="api"
+            )
+            fetched += len(new)
+        backfilled = await self._backfill_equity(rsm, p, wallets)
+        async with rsm() as s:
+            pairs = (
+                await s.execute(
+                    select(SourceEvent.token_id, SourceEvent.condition_id)
+                    .where(
+                        SourceEvent.type == "TRADE",
+                        SourceEvent.block_ts >= p.start,
+                        SourceEvent.block_ts <= p.end,
+                        SourceEvent.token_id.is_not(None),
+                    )
+                    .distinct()
+                )
+            ).all()
+        tokens = {t: c for t, c in pairs if t and c}
+        history = await self._history.load(tokens, p.start - timedelta(hours=1), p.end)
+        return history, fetched, backfilled
+
+    async def _backfill_equity(
+        self, rsm: async_sessionmaker[AsyncSession], p: ReplayParams, wallets: list[WatchedWallet]
+    ) -> int:
+        """A wallet first observed after ``start`` holds its earliest observed equity from
+        ``start`` until that observation, instead of skipping every trade for an unknown
+        bankroll. Look-ahead on sizing only, never on price."""
+        backfilled = 0
+        for w in wallets:
+            async with rsm() as s:
+                known = await s.scalar(
+                    select(WalletEquitySnapshot.id)
+                    .where(
+                        WalletEquitySnapshot.wallet_id == w.id,
+                        WalletEquitySnapshot.observed_at <= p.start,
+                    )
+                    .limit(1)
+                )
+            if known is not None:
+                continue
+            async with self._sm() as s:
+                earliest = await s.scalar(
+                    select(WalletEquitySnapshot)
+                    .where(WalletEquitySnapshot.wallet_id == w.id)
+                    .order_by(WalletEquitySnapshot.observed_at)
+                    .limit(1)
+                )
+            if earliest is None:
+                continue
+            until = min(p.end, earliest.observed_at)
+            grid = [
+                p.start + EQUITY_GRID * i for i in range(int((until - p.start) / EQUITY_GRID) + 1)
+            ]
+            async with rsm() as s, s.begin():
+                s.add_all(
+                    WalletEquitySnapshot(
+                        wallet_id=w.id,
+                        observed_at=at,
+                        positions_value=earliest.positions_value,
+                        cash_balance=earliest.cash_balance,
+                        coverage=earliest.coverage,
+                        open_positions=earliest.open_positions,
+                    )
+                    for at in grid
+                )
+            backfilled += 1
+        return backfilled
+
+    async def _count_events(self, rsm: async_sessionmaker[AsyncSession], p: ReplayParams) -> int:
+        async with rsm() as s:
+            return (
+                await s.scalar(
+                    select(func.count())
+                    .select_from(SourceEvent)
+                    .where(SourceEvent.block_ts >= p.start, SourceEvent.block_ts <= p.end)
+                )
+            ) or 0
 
     async def _drive(
-        self, rsm: async_sessionmaker[AsyncSession], p: ReplayParams, counts: dict[str, int]
+        self,
+        rsm: async_sessionmaker[AsyncSession],
+        p: ReplayParams,
+        counts: dict[str, int],
+        history: MarketHistory | None,
     ) -> dict[str, Any]:
         clock = ManualClock(p.start)
         bus = EventBus()
         hist = HistoricalBooks(rsm, clock)
-        md = MarketDataService(PointInTimeMetadata(rsm, clock), hist, clock, None)
+        books: HistoricalBooks | HistoryBooks = hist
+        meta: PointInTimeMetadata | HistoryMetadata = PointInTimeMetadata(rsm, clock)
+        if history is not None:
+            async with rsm() as s:
+                pairs = (
+                    await s.execute(
+                        select(SourceEvent.token_id, SourceEvent.condition_id).distinct()
+                    )
+                ).all()
+            books = HistoryBooks(hist, history, {t: c for t, c in pairs if t and c}, clock)
+            meta = HistoryMetadata(meta, history, clock)
+        md = MarketDataService(meta, books, clock, None)
         ledger = PortfolioLedger(rsm, clock)
         executor = PaperExecutor(rsm, ledger, md, clock, mode=ExecutionMode.REPLAY)
         settings = SettingsService(rsm)
@@ -380,6 +563,8 @@ class ReplayService:
                 row = await s.get(SourceEvent, ev.id)
                 assert row is not None
                 row.detected_at = ev.detected_at
+            if history is not None:
+                await hedger.settle_resolved()
             await copy_engine.on_trade(ev, wallet)
             if strategy.hedge.enabled:
                 await hedger.scan()
@@ -388,6 +573,8 @@ class ReplayService:
             curve.append({"t": clock.now().isoformat(), "equity": str(view.equity)})
         if p.end > clock.now():
             clock.set(p.end)
+        if history is not None:
+            await hedger.settle_resolved()
         final = await portfolio.view()
         curve.append({"t": p.end.isoformat(), "equity": str(final.equity)})
         problems = await ledger.verify(account_id)
@@ -412,7 +599,11 @@ class ReplayService:
                 "locked_profit": str(final.locked_profit),
                 "signals": dict(by_status),
                 "events_replayed": counts["events"],
+                "prices": p.prices,
                 "snapshots_used": hist.served,
+                "minute_bars_used": books.bars_served if isinstance(books, HistoryBooks) else 0,
+                "activity_fetched": counts.get("fetched", 0),
+                "equity_backfilled": counts.get("equity_backfilled", 0),
                 "ledger_ok": not problems,
             },
             "equity_curve": curve,
@@ -430,6 +621,9 @@ class ReplayService:
                     else str(sig.avg_fill_price),
                     "filled_cost": None if sig.filled_cost is None else str(sig.filled_cost),
                     "reasons": [r["code"] for r in sig.reasons.get("items", [])],
+                    "detail": next(
+                        (r.get("message") for r in reversed(sig.reasons.get("items", []))), None
+                    ),
                 }
                 for sig, ev, w in sigs
             ],

@@ -28,6 +28,7 @@ class Settings(BaseSettings):
 
     data_api_url: str = "https://data-api.polymarket.com"
     gamma_api_url: str = "https://gamma-api.polymarket.com"
+    clob_api_url: str = "https://clob.polymarket.com"
     clob_ws_url: str = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
     geoblock_url: str = "https://polymarket.com/api/geoblock"
     polygon_rpc_url: str = "https://polygon-bor-rpc.publicnode.com"

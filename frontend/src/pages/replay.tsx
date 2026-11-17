@@ -10,21 +10,25 @@ import { DataTable } from '@/components/common/data-table'
 import { DecimalInput } from '@/components/common/decimal-input'
 import { Num } from '@/components/common/num'
 import { Panel, Stat } from '@/components/common/panel'
+import { SegmentedControl } from '@/components/common/segmented'
 import { EmptyState, ErrorState, SkeletonLines } from '@/components/common/states'
 import { TimeSeriesChart, type ChartSeries } from '@/components/common/time-series-chart'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { ApiError, api, type ReplayRun, type ReplaySignal, type ReplayStatus } from '@/lib/api'
+import { ApiError, api, type ReplayPrices, type ReplayRun, type ReplaySignal, type ReplayStatus } from '@/lib/api'
 import { CHART_COLORS, toChartPoints } from '@/lib/chart-data'
 import { normalizeDecimal, signDecimal } from '@/lib/decimal'
 import { fmtDateTime, fmtMs, truncateAddress } from '@/lib/format'
 import { qk, useReplayRun, useReplayRuns, useSettings, useWallets } from '@/lib/queries'
 import { cn, errorMessage } from '@/lib/utils'
 
-const LOOKAHEAD_NOTE =
-  'Uses only order-book snapshots recorded at or before each replayed moment; market resolutions after the replay time are ignored.'
+const PRICE_NOTE: Record<ReplayPrices, string> = {
+  history:
+    "Fetches each wallet's trades and the CLOB's one-minute prices. A copy fills at the last minute price before it was detected, with no spread or depth limit. Markets settle at their payout when they close.",
+  recorded: 'Uses only order-book snapshots this server recorded at or before each replayed moment.',
+}
 
 const STATUS_TONE: Record<ReplayStatus, Tone> = { RUNNING: 'replay', COMPLETED: 'pos', FAILED: 'neg' }
 
@@ -69,6 +73,7 @@ function ReplayForm({ onStarted, disabled }: { onStarted: (id: string) => void; 
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [bankroll, setBankroll] = useState<string | null>(null)
   const [delay, setDelay] = useState('2')
+  const [prices, setPrices] = useState<ReplayPrices>('history')
   const [error, setError] = useState<string | null>(null)
 
   const bankrollValue = bankroll ?? normalizeDecimal(settings.data?.settings.paper.starting_bankroll_usd) ?? ''
@@ -95,6 +100,7 @@ function ReplayForm({ onStarted, disabled }: { onStarted: (id: string) => void; 
         wallet_ids: [...selected].map(Number),
         starting_bankroll: normalizeDecimal(bankrollValue)!,
         ...(delay.trim() !== '' ? { detection_delay_s: delaySeconds } : {}),
+        prices,
       }),
     onSuccess: (res) => {
       setError(null)
@@ -227,10 +233,20 @@ function ReplayForm({ onStarted, disabled }: { onStarted: (id: string) => void; 
             <DecimalInput id="replay-delay" data-testid="replay-delay" suffix="s" value={delay} onChange={(e) => setDelay(e.target.value)} />
           </div>
         </div>
+        <div className="flex flex-col gap-1">
+          <span className="label-caps">Prices</span>
+          <SegmentedControl
+            options={['history', 'recorded'] as const}
+            value={prices}
+            onChange={setPrices}
+            label="Replay price source"
+            format={(o) => (o === 'history' ? 'MINUTE HISTORY' : 'RECORDED BOOKS')}
+          />
+        </div>
         <p className="flex items-start gap-1.5 text-[11px] text-muted-foreground">
           <Info className="mt-0.5 size-3 shrink-0" />
-          Uses current strategy settings, with strategies unpaused, emergency stop cleared and execution delay zeroed in the
-          isolated replay account. No settings overrides are sent. {LOOKAHEAD_NOTE}
+          {PRICE_NOTE[prices]} Uses current strategy settings, with strategies unpaused, emergency stop cleared and execution
+          delay zeroed in the isolated replay account.
         </p>
         {error && (
           <p role="alert" className="rounded-sm border border-neg/30 bg-neg/10 px-2.5 py-1.5 text-[12px] text-neg">
@@ -292,8 +308,8 @@ function runColumns(selectedId: string | null): ColumnDef<ReplayRun>[] {
     numCol<ReplayRun>('starting_bankroll', 'Bankroll', (r) => r.params.starting_bankroll, 'usd', { dp: 0 }),
     numCol<ReplayRun>('final_equity', 'Final equity', (r) => r.summary?.final_equity, 'usd'),
     numCol<ReplayRun>('return_pct', 'Return', (r) => r.summary?.return_pct, 'pct', { signed: true, pnl: true }),
-    numCol<ReplayRun>('executed', 'Executed', (r) => r.summary?.signals.EXECUTED, 'int'),
-    numCol<ReplayRun>('skipped', 'Skipped', (r) => r.summary?.signals.SKIPPED, 'int'),
+    numCol<ReplayRun>('executed', 'Executed', (r) => (r.summary ? (r.summary.signals.EXECUTED ?? 0) : null), 'int'),
+    numCol<ReplayRun>('skipped', 'Skipped', (r) => (r.summary ? (r.summary.signals.SKIPPED ?? 0) : null), 'int'),
     numCol<ReplayRun>('events_replayed', 'Events', (r) => r.summary?.events_replayed, 'int'),
     numCol<ReplayRun>('duration', 'Took', (r) => durationMs(r), 'ms'),
     {
@@ -410,7 +426,13 @@ function RunDetail({ id, onClose }: { id: string; onClose: () => void }) {
             {run.params.detection_delay_s != null && (
               <span className="num text-muted-foreground">delay {run.params.detection_delay_s}s</span>
             )}
+            {s?.prices && <span className="num text-muted-foreground">prices {s.prices}</span>}
             {durationMs(run) !== null && <span className="num text-muted-foreground">took {fmtMs(durationMs(run))}</span>}
+            {!!s?.equity_backfilled && (
+              <Tag tone="warn" title="These wallets had no equity snapshot before the window, so sizing used their earliest one.">
+                equity back-filled · {s.equity_backfilled}
+              </Tag>
+            )}
           </div>
           {run.error && (
             <p role="alert" className="mx-3 mt-2 rounded-sm border border-neg/30 bg-neg/10 px-2.5 py-1.5 text-[12px] text-neg">
@@ -431,8 +453,8 @@ function RunDetail({ id, onClose }: { id: string; onClose: () => void }) {
             <Stat label="Return" value={<Num value={s?.return_pct} kind="pct" signed pnl />} />
             <Stat label="Realized P&L" value={<Num value={s?.realized_pnl} kind="usd" signed pnl />} />
             <Stat label="Unrealized P&L" value={<Num value={s?.unrealized_pnl} kind="usd" signed pnl />} />
-            <Stat label="Locked profit" value={<Num value={s?.locked_profit} kind="usd" signed pnl />} />
             <Stat label="Events replayed" value={<Num value={s?.events_replayed} kind="int" />} />
+            <Stat label="Minute bars" value={<Num value={s?.minute_bars_used} kind="int" />} />
             <Stat label="Book snapshots" value={<Num value={s?.snapshots_used} kind="int" />} />
           </section>
           {s && (
@@ -458,7 +480,7 @@ function RunDetail({ id, onClose }: { id: string; onClose: () => void }) {
           </div>
           <p className="flex items-start gap-1.5 border-b px-3 py-2 text-[11.5px] text-muted-foreground">
             <Info className="mt-0.5 size-3 shrink-0 text-replay" />
-            {LOOKAHEAD_NOTE}
+            {PRICE_NOTE[s?.prices ?? run.params.prices ?? 'recorded']}
           </p>
           <DataTable
             testId="replay-signals-table"
@@ -493,7 +515,7 @@ export function ReplayPage() {
         <div className="min-w-0 flex-1">
           <h1 className="text-[15px] font-semibold tracking-tight">Historical replay</h1>
           <p className="text-[12px] text-muted-foreground">
-            Simulates copy trading over a past period using recorded data. Results are reported separately from live paper
+            Simulates copy trading over a past period from the wallets' trade history and minute prices. Results are reported separately from live paper
             trading.
           </p>
         </div>

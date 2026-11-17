@@ -87,7 +87,7 @@ describe('ReplayPage', () => {
     await user.type(screen.getByTestId('replay-bankroll'), '123.450000000000000001')
     await user.click(screen.getByTestId('replay-submit'))
     await waitFor(() => expect(posts).toHaveLength(1))
-    expect(posts[0]).toMatchObject({ wallet_ids: [1], starting_bankroll: '123.450000000000000001', detection_delay_s: 2 })
+    expect(posts[0]).toMatchObject({ wallet_ids: [1], starting_bankroll: '123.450000000000000001', detection_delay_s: 2, prices: 'history' })
     expect(posts[0]).not.toHaveProperty('settings')
     expect(posts[0]!.start).toMatch(/Z$/)
     expect(posts[0]!.end).toMatch(/Z$/)
