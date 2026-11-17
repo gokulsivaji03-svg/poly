@@ -23,13 +23,13 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import websockets
-from sqlalchemy import update
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.clock import Clock
 from app.core.stages import Stage, StageTimer
-from app.db.models import FeedCursor, SourceEvent, WatchedWallet
+from app.db.models import CopySignal, FeedCursor, SourceEvent, WatchedWallet
 from app.domain.events import ActivityType, SourceActivity, assign_event_keys
 from app.domain.market import MarketInfo
 from app.engine.copy_engine import CopyEngine
@@ -49,6 +49,10 @@ from app.services.wallets import WalletRegistry
 log = logging.getLogger(__name__)
 
 CURSOR = "polygon_fills"
+PENDING_CHECK_AFTER = timedelta(seconds=90)
+"""A pending sighting whose log has not confirmed it by now gets its receipt checked."""
+PENDING_DROPPED_AFTER = timedelta(minutes=10)
+"""Still not mined after this long: treated as dropped from the mempool."""
 
 
 class ChainFeed:
@@ -265,8 +269,57 @@ class ChainFeed:
             for address, wallet_fills in by_wallet.items():
                 ingested += await self._ingest(self._wallets[address], wallet_fills, timer)
             await self._save_cursor(to_block + 1)
+        if self._mempool:
+            await self._reconcile_pending()
         self.last_tick_at = self._clock.now()
         return ingested
+
+    async def _reconcile_pending(self) -> None:
+        """Settle mempool sightings whose confirmed log never reached the tape.
+
+        A reverted or never-mined transaction means a position was copied that the source
+        never got; it is recorded as an ERROR event naming the copy signals for review.
+        """
+        now = self._clock.now()
+        async with self._sm() as s:
+            rows = (
+                await s.execute(
+                    select(SourceEvent.tx_hash, func.min(SourceEvent.detected_at))
+                    .where(
+                        SourceEvent.source == "mempool",
+                        SourceEvent.confirmation == "PENDING",
+                        SourceEvent.detected_at <= now - PENDING_CHECK_AFTER,
+                    )
+                    .group_by(SourceEvent.tx_hash)
+                    .limit(20)
+                )
+            ).all()
+        for tx_hash, seen_at in rows:
+            status = await self._rpc.receipt_status(tx_hash)
+            if status is None and now - seen_at < PENDING_DROPPED_AFTER:
+                continue
+            outcome = "DROPPED" if status is None else ("CONFIRMED" if status == 1 else "REVERTED")
+            async with self._sm() as s, s.begin():
+                ids = (
+                    await s.scalars(
+                        update(SourceEvent)
+                        .where(SourceEvent.tx_hash == tx_hash, SourceEvent.source == "mempool")
+                        .values(confirmation=outcome)
+                        .returning(SourceEvent.id)
+                    )
+                ).all()
+                signals = (
+                    await s.scalars(
+                        select(CopySignal.id).where(CopySignal.source_event_id.in_(ids))
+                    )
+                ).all()
+            if outcome != "CONFIRMED":
+                await self._events.record(
+                    f"PENDING_FILL_{outcome}",
+                    f"Copied a pending fill whose transaction was {outcome.lower()}: {tx_hash}",
+                    level="ERROR",
+                    data={"tx": tx_hash, "signal_ids": list(signals)},
+                )
 
     # ------------------------------------------------------------------ ingestion
     async def _ingest(

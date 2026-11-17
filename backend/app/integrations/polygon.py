@@ -172,6 +172,11 @@ class PolygonRpc:
             self.remember_block(number, ts)
         return ts
 
+    async def receipt_status(self, tx_hash: str) -> int | None:
+        """1 mined and succeeded, 0 mined and reverted, ``None`` not mined (yet)."""
+        receipt = await self._call("eth_getTransactionReceipt", [tx_hash])
+        return None if receipt is None else int(receipt["status"], 16)
+
     async def fills(self, from_block: int, to_block: int, makers: list[str]) -> list[ChainFill]:
         """Fills in ``[from_block, to_block]`` whose maker is one of ``makers``, in log order."""
         if not makers:
