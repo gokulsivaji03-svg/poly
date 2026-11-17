@@ -15,6 +15,7 @@ import logging
 from decimal import Decimal
 
 from sqlalchemy import select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import ExecutionMode
@@ -99,9 +100,6 @@ class PaperExecutor:
             raise DuplicateInFlight(key)
         self._inflight.add(key)
         try:
-            prior = await self._existing(key)
-            if prior is not None:
-                return prior
             return await self._execute_new(req, delay_ms, slippage_bps, share_step)
         finally:
             self._inflight.discard(key)
@@ -112,26 +110,32 @@ class PaperExecutor:
 
         started = self._clock.now()
         async with self._sm() as s, s.begin():
-            order = Order(
-                account_id=req.account_id,
-                idempotency_key=req.idempotency_key,
-                mode=self._mode.value,
-                kind=req.kind,
-                side=req.side.value,
-                condition_id=req.condition_id,
-                token_id=req.token_id,
-                requested_budget=req.budget,
-                requested_shares=req.target_shares,
-                limit_price=req.limit_price,
-                status=OrderStatus.PENDING,
-                reservation_id=req.reservation_id,
-                signal_id=req.signal_id,
-                hedge_id=req.hedge_id,
-                created_at=started,
+            order_id = await s.scalar(
+                pg_insert(Order)
+                .values(
+                    account_id=req.account_id,
+                    idempotency_key=req.idempotency_key,
+                    mode=self._mode.value,
+                    kind=req.kind,
+                    side=req.side.value,
+                    condition_id=req.condition_id,
+                    token_id=req.token_id,
+                    requested_budget=req.budget,
+                    requested_shares=req.target_shares,
+                    limit_price=req.limit_price,
+                    status=OrderStatus.PENDING,
+                    reservation_id=req.reservation_id,
+                    signal_id=req.signal_id,
+                    hedge_id=req.hedge_id,
+                    created_at=started,
+                )
+                .on_conflict_do_nothing(index_elements=["idempotency_key"])
+                .returning(Order.id)
             )
-            s.add(order)
-            await s.flush()
-            order_id = order.id
+        if order_id is None:  # this idempotency key was executed before
+            prior = await self._existing(req.idempotency_key)
+            assert prior is not None
+            return prior
 
         obtained = await self._obtain_fill(req, delay_ms, slippage_bps, share_step)
         if isinstance(obtained, str):
