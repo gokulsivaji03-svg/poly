@@ -19,7 +19,6 @@ ONE = Decimal(1)
 # USDC / pUSD and conditional tokens both use 6 on-chain decimals.
 USDC_QUANTUM = Decimal("0.000001")
 SHARE_QUANTUM = Decimal("0.000001")
-PRICE_QUANTUM = Decimal("0.000001")
 
 
 def to_decimal(value: object) -> Decimal:
@@ -62,10 +61,6 @@ def floor_to_step(value: Decimal, step: Decimal) -> Decimal:
     if step <= ZERO:
         raise ValueError("step must be positive")
     return (value / step).to_integral_value(rounding=ROUND_DOWN) * step
-
-
-def clamp(value: Decimal, low: Decimal, high: Decimal) -> Decimal:
-    return max(low, min(high, value))
 
 
 def hours_between(a: datetime, b: datetime) -> Decimal:
