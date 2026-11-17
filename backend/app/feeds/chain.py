@@ -34,7 +34,13 @@ from app.domain.events import ActivityType, SourceActivity, assign_event_keys
 from app.domain.market import MarketInfo
 from app.engine.copy_engine import CopyEngine
 from app.feeds.tape import TradeTape
-from app.integrations.polygon import ChainFill, PolygonRpc, decode_fill, fill_filter
+from app.integrations.polygon import (
+    ChainFill,
+    PolygonRpc,
+    decode_fill,
+    decode_pending_fills,
+    fill_filter,
+)
 from app.integrations.polymarket.markets import MarketMetadataClient
 from app.services.event_bus import EventBus
 from app.services.system_events import SystemEventLog
@@ -65,6 +71,7 @@ class ChainFeed:
         max_block_range: int = 200,
         unmapped_ttl: timedelta = timedelta(minutes=10),
         on_tick: Callable[[], None] | None = None,
+        mempool: bool = False,
     ) -> None:
         self._sm = sm
         self._rpc = rpc
@@ -82,9 +89,12 @@ class ChainFeed:
         self._max_range = max_block_range
         self._unmapped_ttl = unmapped_ttl
         self.on_tick = on_tick
+        self._mempool = mempool
+        self.mempool_connected = False
+        self.mempool_reconnects = 0
         self._next_block: int | None = None
         self._tokens: dict[str, MarketInfo] = {}
-        self._unmapped: dict[tuple[str, int], tuple[ChainFill, datetime]] = {}
+        self._unmapped: dict[tuple[str, int | None], tuple[ChainFill, datetime]] = {}
         self._wallets: dict[str, WatchedWallet] = {}
         self._copying: dict[int, asyncio.Task[None]] = {}
         self._stream_wallets: frozenset[str] = frozenset()
@@ -97,7 +107,11 @@ class ChainFeed:
 
     # ------------------------------------------------------------------ lifecycle
     async def run(self, stop: asyncio.Event) -> None:
-        stream = asyncio.create_task(self._stream_forever(stop)) if self._ws_url else None
+        streams = []
+        if self._ws_url:
+            streams.append(asyncio.create_task(self._stream_forever(stop)))
+            if self._mempool:
+                streams.append(asyncio.create_task(self._mempool_forever(stop)))
         try:
             while not stop.is_set():
                 try:
@@ -110,7 +124,7 @@ class ChainFeed:
                 with contextlib.suppress(TimeoutError):
                     await asyncio.wait_for(stop.wait(), timeout=interval)
         finally:
-            if stream is not None:
+            for stream in streams:
                 stream.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await stream
@@ -158,7 +172,62 @@ class ChainFeed:
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(stop.wait(), timeout=min(30, 0.5 * 2**attempt))
 
+    async def _mempool_forever(self, stop: asyncio.Event) -> None:
+        """Pending operator ``matchOrders`` calls, on a socket of their own so the pending
+        firehose never delays log frames."""
+        assert self._ws_url is not None
+        attempt = 0
+        while not stop.is_set():
+            try:
+                async with websockets.connect(
+                    self._ws_url, open_timeout=10, ping_interval=20, max_size=None
+                ) as ws:
+                    await ws.send(
+                        json.dumps(
+                            {
+                                "jsonrpc": "2.0",
+                                "id": 1,
+                                "method": "eth_subscribe",
+                                "params": ["newPendingTransactions", True],
+                            }
+                        )
+                    )
+                    self.mempool_connected = True
+                    attempt = 0
+                    async for raw in ws:
+                        msg = json.loads(raw)
+                        if msg.get("method") == "eth_subscription":
+                            await self.handle_pending(msg["params"]["result"])
+            except Exception as exc:  # network or protocol errors: back off and reconnect
+                log.warning("mempool stream disconnected", extra={"error": repr(exc)})
+            finally:
+                if self.mempool_connected:
+                    self.mempool_reconnects += 1
+                self.mempool_connected = False
+            attempt += 1
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(stop.wait(), timeout=min(30, 0.5 * 2**attempt))
+
     # ------------------------------------------------------------------ inputs
+    async def handle_pending(self, tx: dict[str, Any]) -> int:
+        """Copy a followed wallet's fill from its pending settlement transaction.
+
+        The confirmed log for the same (wallet, tx, token, side) is later dropped by the
+        tape's cross-source dedupe; if the log arrives first, this sighting is dropped."""
+        if not isinstance(tx, dict):
+            return 0
+        timer = StageTimer()
+        calldata = str(tx.get("input") or "")
+        if not any(address[2:] in calldata for address in self._wallets):
+            return 0  # a substring test (~0.3 us) skips the ~80 us ABI decode
+        fills = [f for f in decode_pending_fills(tx) if f.maker in self._wallets]
+        ingested = 0
+        for maker in {f.maker for f in fills}:
+            ingested += await self._ingest(
+                self._wallets[maker], [f for f in fills if f.maker == maker], timer
+            )
+        return ingested
+
     async def handle_message(self, msg: dict[str, Any]) -> int:
         """Apply one subscription message; returns new trades ingested (0 for heads/acks)."""
         if msg.get("method") != "eth_subscription":
@@ -204,11 +273,13 @@ class ChainFeed:
         self, wallet: WatchedWallet, fills: list[ChainFill], timer: StageTimer | None = None
     ) -> int:
         timer = timer or StageTimer()
+        pending = fills[0].block_number is None
         rows: list[SourceActivity] = []
         for f in fills:
             row = await self._to_activity(wallet, f)
             if row is None:
-                self._unmapped.setdefault((f.tx_hash, f.log_index), (f, self._clock.now()))
+                if not pending:  # an unmapped pending fill is retried by its confirmed log
+                    self._unmapped.setdefault((f.tx_hash, f.log_index), (f, self._clock.now()))
                 continue
             self._unmapped.pop((f.tx_hash, f.log_index), None)
             rows.append(row)
@@ -220,7 +291,7 @@ class ChainFeed:
             assign_event_keys(rows),
             detected_at=detected_at,
             followed_since=wallet.followed_since,
-            source="chain",
+            source="mempool" if pending else "chain",
         )
         if not new:
             return 0
@@ -277,7 +348,12 @@ class ChainFeed:
         token = market.token(f.token_id) if market else None
         if market is None or token is None:
             return None
-        ts = await self._rpc.block_timestamp(f.block_number)
+        if f.block_number is None:  # pending: stamped when seen, before its block exists
+            seen_at = self._clock.now()
+        else:
+            seen_at = datetime.fromtimestamp(
+                await self._rpc.block_timestamp(f.block_number), tz=UTC
+            )
         return SourceActivity(
             wallet=wallet.address.lower(),
             type=ActivityType.TRADE,
@@ -291,7 +367,7 @@ class ChainFeed:
             usdc_size=f.usdc,
             price=f.price,
             tx_hash=f.tx_hash,
-            block_ts=datetime.fromtimestamp(ts, tz=UTC),
+            block_ts=seen_at,
             title=market.question,
             slug=market.slug,
         )

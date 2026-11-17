@@ -506,6 +506,8 @@ export interface SystemMetrics {
   ws_reconnects: number | null
   chain_stream_connected: boolean | null
   chain_stream_reconnects: number | null
+  mempool_stream_connected: boolean | null
+  mempool_stream_reconnects: number | null
   chain_detection_lag_s: number | null
   http_errors_5m: number | null
   last_poll_at: Iso | null

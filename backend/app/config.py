@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     """Polygon JSON-RPC: the trade feed (exchange fill logs) and source collateral reads."""
     polygon_ws_url: str | None = None
     """WebSocket endpoint for pushed fill logs; defaults to polygon_rpc_url as wss://."""
+    chain_mempool: bool = True
+    """Also copy from pending ``matchOrders`` transactions (median 0.8 s before their block,
+    measured by scripts/mempool_probe.py); needs a node serving full pending bodies."""
     chain_poll_interval_s: float = Field(default=0.5, gt=0)
     """Backstop log polling interval while the WebSocket stream is down."""
     chain_backstop_interval_s: float = Field(default=2.0, gt=0)
