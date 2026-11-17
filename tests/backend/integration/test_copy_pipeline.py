@@ -129,7 +129,9 @@ async def test_duplicate_push_and_out_of_order_trade(env, world):
     pushed = {"jsonrpc": "2.0", "method": "eth_subscription", "params": {"result": row}}
     await rt.feed.tick()  # learn followed wallets and initialize the cursor
     assert await rt.feed.handle_message(pushed) == 1
+    await rt.feed.drain()
     assert await rt.feed.handle_message(pushed) == 0
+    await rt.feed.drain()
     clock.advance(400)
     assert (
         await chain_trade(
@@ -189,7 +191,9 @@ async def test_restart_recovers_missed_trades_once(world, sm):
         rt2 = await make_runtime(TEST_DB, clock, rest, create_async_engine(TEST_DB))
         await rt2.recover()
         assert await rt2.feed.tick() == 2
+        await rt2.feed.drain()
         assert await rt2.feed.tick() == 0
+        await rt2.feed.drain()
         sigs = await signals(rt2)
         assert len(sigs) == 3
         assert all(sg.status == SignalStatus.EXECUTED for sg in sigs)
@@ -261,6 +265,7 @@ async def test_simultaneous_trades_never_overspend(env, world):
                 )
             )
     assert await rt.feed.tick() == 8
+    await rt.feed.drain()
     sigs = await signals(rt)
     executed = [sg for sg in sigs if sg.status == SignalStatus.EXECUTED]
     rejected = [sg for sg in sigs if sg.status == SignalStatus.REJECTED]
@@ -287,7 +292,9 @@ async def test_rpc_outage_does_not_lose_or_duplicate_trade(env, world):
     assert await signals(rt) == []
     world.rpc_errors = 0
     assert await rt.feed.tick() == 1
+    await rt.feed.drain()
     assert await rt.feed.tick() == 0
+    await rt.feed.drain()
     assert len(await signals(rt)) == 1
 
 

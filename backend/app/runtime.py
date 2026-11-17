@@ -386,6 +386,7 @@ class Runtime:
     async def stop(self) -> None:
         await self.replay.wait()
         await self.supervisor.stop()
+        await self.feed.drain()
         await self.http.aclose()
         if self.sdk is not None:
             await self.sdk.close()

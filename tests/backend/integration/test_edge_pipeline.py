@@ -109,9 +109,11 @@ async def push(rt, world, clock, wallet, *, block, ago_s=2, **kw):
     """Deliver one fill log via the WebSocket ``logs`` subscription (not the backstop tick)."""
     world.block_ts[block] = int(clock.now().timestamp() - ago_s)
     log = fill_log(wallet, block=block, **kw)
-    return await rt.feed.handle_message(
+    ingested = await rt.feed.handle_message(
         {"jsonrpc": "2.0", "method": "eth_subscription", "params": {"result": log}}
     )
+    await rt.feed.drain()
+    return ingested
 
 
 def pushed(result):
@@ -384,6 +386,7 @@ async def test_max_buys_per_market_holds_across_concurrent_wallets(env, world, m
         for i, w in enumerate((wa, wb))
     ]
     await asyncio.gather(*(rt.feed.handle_message(pushed(log)) for log in logs))
+    await rt.feed.drain()
     sigs = await signals(rt)
     assert sorted(s.status for s in sigs) == [SignalStatus.EXECUTED, SignalStatus.REJECTED]
     [rejected] = [s for s in sigs if s.status == SignalStatus.REJECTED]
@@ -519,6 +522,7 @@ async def test_buy_indexed_after_its_sell_does_not_leave_orphan_position(env, wo
     rt, clock, _rest = env
     await follow(rt, world)
     await rt.feed.tick()
+    await rt.feed.drain()
     clock.advance(10)
     t_buy = int((clock.now() - timedelta(seconds=4)).timestamp())
     t_sell = int((clock.now() - timedelta(seconds=2)).timestamp())
@@ -527,6 +531,7 @@ async def test_buy_indexed_after_its_sell_does_not_leave_orphan_position(env, wo
     world.block_ts[sell_block] = t_sell
     sell_log = fill_log(WALLET_A, block=sell_block, side="SELL", tx="0x5e11")
     assert await rt.feed.handle_message(pushed(sell_log)) == 1
+    await rt.feed.drain()
     [sell] = await signals(rt)
     assert "NO_COPIED_INVENTORY" in codes(sell)
     # The earlier BUY is delivered later, after the source's exit was already consumed.
@@ -534,6 +539,7 @@ async def test_buy_indexed_after_its_sell_does_not_leave_orphan_position(env, wo
     world.block_ts[buy_block] = t_buy
     buy_log = fill_log(WALLET_A, block=buy_block, tx="0xb0b")
     assert await rt.feed.handle_message(pushed(buy_log)) == 1
+    await rt.feed.drain()
     buy = (await signals(rt))[-1]
     assert await rt.ledger.open_lots(rt.account_id) == [], buy.status
     assert buy.status == SignalStatus.SKIPPED and "SOURCE_SOLD_AFTER" in codes(buy)
@@ -593,6 +599,7 @@ async def test_concurrent_signals_with_tiny_cash_never_breach_reserve_floor(env,
         for address in (WALLET_A, WALLET_B, WALLET_C, WALLET_D)
     ]
     await rt.feed.tick()
+    await rt.feed.drain()
     clock.advance(5)
     block = world.head + 1
     world.block_ts[block] = int(clock.now().timestamp())
@@ -608,6 +615,7 @@ async def test_concurrent_signals_with_tiny_cash_never_breach_reserve_floor(env,
         for i in range(2)
     ]
     await asyncio.gather(*(rt.feed.handle_message(pushed(log)) for log in logs))
+    await rt.feed.drain()
     sigs = await signals(rt)
     assert len(sigs) == 8
     spent = sum((s.filled_cost for s in sigs if s.filled_cost is not None), D(0))

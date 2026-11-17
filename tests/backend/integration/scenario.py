@@ -331,4 +331,6 @@ async def chain_trade(
     world.block_ts[world.head] = int((clock.now() - timedelta(seconds=ago_s)).timestamp())
     fill.setdefault("tx", f"0x{world.head:x}{len(world.fill_logs):04x}")
     world.fill_logs.append(fill_log(wallet, block=world.head, **fill))
-    return await rt.feed.tick()
+    ingested = await rt.feed.tick()
+    await rt.feed.drain()
+    return ingested
