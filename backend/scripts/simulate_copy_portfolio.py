@@ -133,6 +133,8 @@ def main() -> None:
     ap.add_argument("--max-market-pct", type=Decimal, default=ONE,
                     help="cap cost basis per market at this fraction of our equity (1 = off)")
     ap.add_argument("--max-entry-price", type=Decimal, default=ONE)
+    ap.add_argument("--min-source-usd", type=Decimal, default=ZERO,
+                    help="copy only source BUYs costing at least this much")
     ap.add_argument("--exclude", action="append", default=[],
                     help="never copy buys in markets whose condition id equals, or whose "
                     "title contains (case-insensitive), this value; repeatable")
@@ -219,6 +221,8 @@ def main() -> None:
                         skips["EXCLUDED"] += 1
                     elif price > args.max_entry_price:
                         skips["ENTRY_PRICE_TOO_HIGH"] += 1
+                    elif to_decimal(r["usdc_size"]) < args.min_source_usd:
+                        skips["SOURCE_TRADE_TOO_SMALL"] += 1
                     elif src_equity <= ZERO:
                         skips["SOURCE_EQUITY_UNKNOWN"] += 1
                     else:

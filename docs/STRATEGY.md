@@ -27,7 +27,31 @@ Reading:
 - Returns are concentrated. One market ("US x Iran permanent peace deal by June 15, 2026?") contributed +$2,109 of the +$3,445 at 0¢. Drawdowns of 42% and more are normal.
 - At $1,000 the sizing is the binding constraint. 12,736 source BUYs were skipped as `BELOW_MIN_ORDER`, because a proportional copy of a $192k wallet is often under $1. A larger bankroll or a sizing multiplier copies more of the sharp's flow.
 
-Limits: there is no order book, so depth, queue position and market impact are missing. CONVERSION events are ignored. Source equity is a lower bound, so allocation percentages are upper bounds.
+Bankroll barely changes the return at 0.5¢ premium. The skipped small orders carry little of the edge, because the sharp's large orders do:
+
+| bankroll | return | max drawdown | buys skipped under $1 |
+|---|---|---|---|
+| $1,000 | +226% | 44% | 13,045 |
+| $5,000 | +236% | 46% | 9,287 |
+| $25,000 | +235% | 47% | 5,117 |
+| $100,000 | +234% | 47% | 1,958 |
+
+Limits: there is no order book, so depth, queue position and market impact are missing. Large bankrolls would move thin markets, so the bigger rows are optimistic. CONVERSION events are ignored. Source equity is a lower bound, so allocation percentages are upper bounds.
+
+## Filters
+
+Same simulation, 0.5¢ premium, $1,000 bankroll. `--max-entry-price` skips buys above a price. `--min-source-usd` skips small source buys.
+
+| filter | return | max drawdown |
+|---|---|---|
+| none | +226% | 44% |
+| max entry 0.75 (app default) | +174% | 48% |
+| max entry 0.90 | +232% | 43% |
+| min source $250 | +212% | 44% |
+| min source $1,000 | +157% | 39% |
+| min source $5,000 | +43% | 26% |
+
+The default entry cap costs this sharp about 52 points, because it skips favorites between 75¢ and 90¢ that the sharp gets right. A 0.90 cap keeps them and still drops near-certain buys, where the upside is a few cents. Size filters only lower the return, so small source trades carry edge too. The app default stays at 0.75 until more wallets are tested. One wallet is not enough to change it for everyone. The overnight paper account uses 0.90.
 
 ## Hedging gives the edge away
 
