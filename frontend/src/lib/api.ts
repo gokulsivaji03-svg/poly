@@ -508,6 +508,8 @@ export interface SystemMetrics {
   chain_stream_reconnects: number | null
   mempool_stream_connected: boolean | null
   mempool_stream_reconnects: number | null
+  mempool_streams_up: number | null
+  mempool_streams_total: number | null
   chain_detection_lag_s: number | null
   http_errors_5m: number | null
   last_poll_at: Iso | null

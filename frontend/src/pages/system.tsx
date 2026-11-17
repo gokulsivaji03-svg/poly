@@ -159,7 +159,7 @@ function Metrics({ h }: { h: SystemHealth }) {
       <Stat
         label="Mempool stream"
         value={m.mempool_stream_connected == null ? <Unavailable /> : m.mempool_stream_connected ? <span className="text-pos">connected</span> : <span className="text-neg">down</span>}
-        sub={m.mempool_stream_reconnects != null ? `${m.mempool_stream_reconnects} reconnects` : undefined}
+        sub={m.mempool_streams_total ? `${m.mempool_streams_up}/${m.mempool_streams_total} endpoints, ${m.mempool_stream_reconnects ?? 0} reconnects` : undefined}
       />
       <Stat label="Terminal stream" value={<span className={status.state === 'connected' ? 'text-pos' : 'text-warn'}>{status.state}</span>} />
       <Stat label="HTTP errors 5m" value={<Num value={m.http_errors_5m} kind="int" />} />

@@ -185,7 +185,7 @@ class Runtime:
             bus,
             clock,
             ws_url=cfg.chain_ws_url,
-            mempool=cfg.mempool_enabled,
+            mempool_urls=cfg.mempool_ws_urls,
             poll_interval_s=cfg.chain_poll_interval_s,
             backstop_interval_s=cfg.chain_backstop_interval_s,
             lookback_blocks=cfg.chain_lookback_blocks,
