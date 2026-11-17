@@ -248,6 +248,8 @@ All return `{version, settings}` except `reset-paper`.
   "metrics": {"source_detection_lag_ms_p50", "source_detection_lag_ms_p95",
               "data_api_lag_s", "signal_latency_ms_p50", "exec_latency_ms_p50",
               "book_age_ms_p50", "ws_connected": bool, "ws_reconnects": int,
+              "chain_stream_connected": bool, "chain_stream_reconnects": int,
+              "chain_detection_lag_s": float|null,
               "http_errors_5m": int, "last_poll_at"},   // ints/strings or null
   "ledger_ok": bool, "ledger_problems": [str]
 }

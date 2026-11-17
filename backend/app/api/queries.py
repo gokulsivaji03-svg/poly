@@ -594,6 +594,9 @@ async def system_metrics(rt: Runtime) -> dict[str, Any]:
         "book_age_ms_p50": _p([int(b) for _, b in ords if b is not None], 0.5),
         "ws_connected": bool(rt.stream and rt.stream.connected),
         "ws_reconnects": rt.stream.reconnects if rt.stream else 0,
+        "chain_stream_connected": bool(rt.chain and rt.chain.stream_connected),
+        "chain_stream_reconnects": rt.chain.stream_reconnects if rt.chain else 0,
+        "chain_detection_lag_s": rt.chain.last_lag_s if rt.chain else None,
         "http_errors_5m": rt.http.stats.errors_since(300),
         "last_poll_at": ts(rt.monitor.last_poll_at),
     }
