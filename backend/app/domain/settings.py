@@ -99,7 +99,9 @@ class CopySettings(Model):
 
 
 class HedgeSettings(Model):
-    enabled: bool = True
+    enabled: bool = False
+    """Off by default: across 14 backtest configurations of a directional sharp, hedging
+    with the complement trailed holding by 6.5-16.9 points of return on cost (docs/STRATEGY.md)."""
     mode: HedgeMode = HedgeMode.ALERT_ONLY
     min_net_gap_per_share: Dec = Field(default=Decimal("0.03"), ge=0)
     min_abs_profit_usd: Dec = Field(default=Decimal("0.25"), ge=0)
