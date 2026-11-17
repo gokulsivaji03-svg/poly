@@ -41,9 +41,14 @@ Change credentials before exposing the server. No private key is needed.
 ```text
 backend/
   app/api/             authenticated REST + WebSocket transport
-  app/domain/          deterministic sizing, risk, fills, hedge math
-  app/integrations/    Data API v2, Gamma, CLOB SDK/WS, eligibility
-  app/services/        workers, ledger, copy, hedge, replay
+  app/domain/          immutable models, fills, hedge and accounting math
+  app/strategy/        pure copy decisions, sizing and sell policy
+  app/risk/            shared pretrade gates and kill switch
+  app/engine/          context loading, journaling and copy orchestration
+  app/execution/       venue-neutral orders, paper and live executors
+  app/feeds/           Polygon fills, wallet observation and trade tape
+  app/integrations/    Data API v2, Gamma, CLOB, Polygon and eligibility
+  app/services/        ledger, hedge, replay, settings and worker lifecycle
   app/db/              SQLAlchemy models
   alembic/             PostgreSQL migrations
 frontend/

@@ -1,4 +1,4 @@
-"""PaperExecutionEngine: simulated immediate-or-cancel execution against live order books.
+"""PaperExecutor: simulated immediate-or-cancel execution against live order books.
 
 Lifecycle per order (idempotent on ``idempotency_key``):
 
@@ -12,10 +12,7 @@ Lifecycle per order (idempotent on ``idempotency_key``):
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta
 from decimal import Decimal
-from typing import Protocol
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -23,52 +20,21 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.config import ExecutionMode
 from app.core.clock import Clock
 from app.core.money import ONE, ZERO
-from app.db.models import Lot, LotClosure, LotOrigin, Order, OrderKind, OrderStatus
+from app.db.models import Lot, LotClosure, Order, OrderStatus
 from app.domain.fills import FillSimulation, simulate_buy, simulate_sell
-from app.domain.market import BookLevel, FeeModel, OrderBook, Side
+from app.domain.market import BookLevel, OrderBook, Side
+from app.execution.orders import (
+    BookSource,
+    DuplicateInFlight,
+    ExecutionRequest,
+    ExecutionResult,
+    ObtainedFill,
+)
 from app.services.ledger import LedgerError, PortfolioLedger
 
 log = logging.getLogger(__name__)
 
 MAX_PRICE = Decimal("0.999")
-
-
-class DuplicateInFlight(RuntimeError):
-    """The same idempotency key is already executing in this process."""
-
-
-class BookSource(Protocol):
-    async def get_book(self, token_id: str, *, fresh: bool = False) -> OrderBook | None: ...
-
-
-@dataclass(frozen=True, slots=True)
-class ExecutionRequest:
-    account_id: int
-    idempotency_key: str
-    kind: OrderKind
-    side: Side
-    condition_id: str
-    token_id: str
-    fee_model: FeeModel
-    max_book_age: timedelta
-    budget: Decimal | None = None
-    """BUY cash cap (must be <= reservation)."""
-    target_shares: Decimal | None = None
-    """BUY: target delivered shares (hedges). SELL: shares to sell."""
-    limit_price: Decimal | None = None
-    reservation_id: int | None = None
-    origin: LotOrigin = LotOrigin.COPY
-    outcome: str = ""
-    question: str = ""
-    source_wallet: str | None = None
-    signal_id: int | None = None
-    hedge_id: int | None = None
-    allow_matched: bool = False
-    lot_ids: tuple[int, ...] | None = None
-    """SELL: restrict to these lots (e.g. only lots copied from one source wallet)."""
-    min_order_usd: Decimal = ZERO
-    match_allocations: tuple[tuple[int, Decimal], ...] | None = None
-    """Hedge BUY: primary (lot_id, shares) to pair with the delivered shares, in priority."""
 
 
 def _cap_allocations(
@@ -86,32 +52,6 @@ def _cap_allocations(
     return out
 
 
-@dataclass(frozen=True, slots=True)
-class ExecutionResult:
-    order_id: int
-    status: OrderStatus
-    fill: FillSimulation | None = None
-    lot_id: int | None = None
-    closure_ids: tuple[int, ...] = ()
-    reason: str | None = None
-    replayed: bool = False
-    extra: dict[str, str] = field(default_factory=dict)
-
-    @property
-    def filled(self) -> bool:
-        return self.status in (OrderStatus.FILLED, OrderStatus.PARTIALLY_FILLED)
-
-
-@dataclass(frozen=True, slots=True)
-class ObtainedFill:
-    """What an execution venue (simulated or real) delivered for one order."""
-
-    fill: FillSimulation
-    book_hash: str | None
-    book_received_at: datetime | None
-    book_age_ms: int | None
-
-
 def apply_slippage(book: OrderBook, bps: int) -> OrderBook:
     """Adverse-shift every level by ``bps`` basis points (asks up, bids down)."""
     if bps == 0:
@@ -127,7 +67,7 @@ def apply_slippage(book: OrderBook, bps: int) -> OrderBook:
     return book.model_copy(update={"asks": asks, "bids": bids})
 
 
-class PaperExecutionEngine:
+class PaperExecutor:
     def __init__(
         self,
         sm: async_sessionmaker[AsyncSession],
@@ -137,8 +77,8 @@ class PaperExecutionEngine:
         *,
         mode: ExecutionMode = ExecutionMode.PAPER,
     ) -> None:
-        if mode is ExecutionMode.LIVE and type(self) is PaperExecutionEngine:
-            raise ValueError("PaperExecutionEngine never runs in LIVE mode")
+        if mode is ExecutionMode.LIVE and type(self) is PaperExecutor:
+            raise ValueError("PaperExecutor never runs in LIVE mode")
         self._sm = sm
         self._ledger = ledger
         self._books = books

@@ -7,7 +7,7 @@ const field = (section: string, key: string) => fields.find((f) => f.section ===
 describe('settings backend contract', () => {
   it('uses JSON integers for integer backend fields', () => {
     for (const [section, key] of [
-      ['risk', 'max_detection_delay_s'], ['risk', 'max_book_age_s'],
+      ['risk', 'max_detection_delay_s'], ['risk', 'max_book_age_s'], ['risk', 'max_buys_per_market'],
       ['hedge', 'scan_interval_s'], ['paper', 'execution_delay_ms'], ['paper', 'extra_slippage_bps'],
     ]) {
       const f = field(section!, key!)

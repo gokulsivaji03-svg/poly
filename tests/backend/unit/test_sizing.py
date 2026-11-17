@@ -7,7 +7,7 @@ from app.domain.settings import (
     SizingSettings,
     UnknownEquityPolicy,
 )
-from app.domain.sizing import size_copy
+from app.strategy.sizing import size_copy
 from hypothesis import given, settings
 from hypothesis import strategies as st
 

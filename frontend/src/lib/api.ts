@@ -427,6 +427,8 @@ export interface RiskSettings {
   daily_loss_limit_usd: Decimal
   max_book_age_s: number
   min_order_usd: Decimal
+  max_entry_price: Decimal
+  max_buys_per_market: number
 }
 
 export interface CopySettings {
@@ -502,6 +504,9 @@ export interface SystemMetrics {
   book_age_ms_p50: number | null
   ws_connected: boolean | null
   ws_reconnects: number | null
+  chain_stream_connected: boolean | null
+  chain_stream_reconnects: number | null
+  chain_detection_lag_s: number | null
   http_errors_5m: number | null
   last_poll_at: Iso | null
 }

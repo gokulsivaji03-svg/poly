@@ -25,8 +25,18 @@ PostgreSQL is required, not SQLite. Run migrations before starting. Workers use 
 ## Paper workflow
 
 1. Configure starting bankroll in Settings and explicitly reset the paper account to apply it. Reset deletes that account's orders, fills, lots and equity history; wallet history remains.
-2. Add a public wallet. Initial history is backfill for analytics, not orders to replay now. Newly detected BUY/SELL activity generates auditable copy signals.
-3. Source equity is an estimate. Public position value excludes cash; without optional Polygon RPC collateral observations, it is a lower bound, not a known bankroll. Default risk caps still apply. Fixed sizing modes are available for unknown equity.
+2. Add a public wallet. The observer imports only activity from before the follow timestamp,
+   as analytics-only backfill. New BUY/SELL fills come from Polygon exchange logs and generate
+   auditable copy signals.
+3. Source equity is an estimate. Public position value excludes cash; Polygon collateral
+   observations improve coverage but still do not prove a wallet's complete bankroll.
+   Default risk caps still apply. Fixed sizing modes remain available for unknown equity.
+   `POLYCOPY_POLYGON_RPC_URL` is required for live source detection. `ChainFeed` receives fills
+   through a WebSocket `logs` subscription (`POLYCOPY_POLYGON_WS_URL`, derived from the RPC URL
+   by default) and uses `eth_getLogs` as a backstop every 2 s, or every 0.5 s while disconnected.
+   Its block cursor is persisted in PostgreSQL, so restarts resume without replaying copied fills.
+   A `prewarm` worker keeps metadata and books warm for markets followed wallets hold or traded
+   in during the last 24 h.
 4. Inspect skipped/reduced signal reasons rather than assuming every source trade is executable.
 5. Enable the independent hedge scanner. Alert-only is separate from automatic paper hedging. Matched shares and locked-profit estimates require actual ledger fills.
 6. Pause stops new strategy work. Emergency stop persists until explicitly cleared. Neither action can reverse already acquired shares.

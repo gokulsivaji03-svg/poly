@@ -38,7 +38,7 @@ from app.db.models import (
 )
 from app.domain.fills import FillSimulation
 from app.domain.market import Side
-from app.domain.risk import PortfolioSnapshot
+from app.risk.pretrade import PortfolioSnapshot
 
 
 class LedgerError(Exception):

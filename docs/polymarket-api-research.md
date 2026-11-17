@@ -8,7 +8,8 @@ listed here with its source so it can be re-verified when Polymarket changes thi
 | Need | Source | Notes |
 |---|---|---|
 | Wallet activity | `GET https://data-api.polymarket.com/v2/activity?user=` | **v1 is retired** (`/trades` returns `"Data API v1 has been retired"`). Envelope `{data, pagination}`; cursor-only keyset pagination ordered by `(block_timestamp, sequence_id)`; `sort_direction=ASC` supported; `start`/`end` epoch-second window (omitted `start` floors to 3 years back). Types: `TRADE, SPLIT, MERGE, REDEEM, CONVERSION, REWARD, YIELD, MAKER_REBATE, …`. Rows carry `transaction_hash`, `token_id`, `condition_id`, `side`, `size` (shares), `usdc_size`, `price`, `outcome_index` (`999` = unlabelable), `is_combo`. **No per-row event id is exposed.** |
-| Wallet positions | `GET /v2/positions?user=` | `current_size`, `avg_price`, `current_price`, `current_value`, `opposite_token_id`, `negative_risk`, `status` (`OPEN` includes resolved-unredeemed). |
+| Wallet positions | `GET /v2/positions?user=` | `current_size`, `avg_price`, `current_price`, `current_value`, `opposite_token_id`, `negative_risk`, `status` (`OPEN` or `REDEEMABLE`; worthless resolved losers linger as `REDEEMABLE` while redeemed winners disappear, so summing per-position P&L is biased toward losses). |
+| Wallet P&L | `GET /v2/user-pnl?user=` | `{data: {points: [...]}}`; latest point's `realized_pnl` / `unrealized_pnl` are lifetime account totals (`realized_pnl` matches `/v2/leaderboard` `pnl`). Empty `points` = no history. Source of observed wallet P&L. |
 | Portfolio value | `GET /v2/value?user=` | Positions marked to market. Does **not** include free collateral. |
 | Freshness | `GET /v2/status` | `serving.lag_seconds`, ingestion block lag. Used for health/staleness. |
 | Token mapping | `GET /v2/tokens?condition=` (SDK `get_token_references`) | Token → condition, outcome index, `opposite_asset_id`, `neg_risk`, `resolved`, `final_price`. Authoritative complement mapping. |
@@ -42,6 +43,33 @@ wallet/token. Event identity is therefore a SHA-256 of
 **occurrence ordinal** for byte-identical rows within the same transaction. Polling
 re-reads an overlap window, so repeated rows hash to the same key and are ignored by a
 unique constraint.
+
+### Fast detection from exchange fill logs
+
+The Data API typically shows a trade ~6–8 s after its block (pbf, measured: detection
+median 11 s including our 4 s polling). Exchange fill logs are readable as soon as the
+block is (~1 s Polygon blocks). Verified 2026-11-17 against Data API rows:
+
+| Item | Value |
+|---|---|
+| Exchanges | `0xe111180000d2663c0091e4f400237545b87b996b` (standard), `0xe2222d279d744050d28e00520010520000310f59` (neg-risk) |
+| Fill event topic0 | `0xd543adfd945773f1a62f74f0ee55a5e3b9b1a28262980ba90b1a89f2ea84d8ee` |
+| Topics | `[event, orderHash, maker, taker]` |
+| Data words | `[side (0 BUY, 1 SELL), tokenId, makerAmountFilled, takerAmountFilled, fee, …]`, 6-decimal units. BUY: maker amount = USDC, taker amount = shares; SELL: the reverse. |
+
+Every order a wallet gets filled on emits one event with that wallet as `maker`; when the
+wallet is the taker, its own order is logged with `taker` = the exchange contract. Filtering
+`eth_getLogs` on topic2 ∈ followed wallets therefore yields each of their trades once,
+matching the Data API's per-order rows. Tokens map to markets via Gamma
+`/markets?clob_token_ids=` (same open/`closed=true` split as condition lookups).
+Polymarket matches off-chain and settles in the next block, so a trade cannot be seen
+before it is on-chain.
+
+Push vs poll (measured 2026-11-17, 45 s, all exchange fills, publicnode): a WebSocket `logs`
+subscription delivered a fill transaction a median 537 ms (p90 888 ms) before 0.5 s
+`eth_getLogs` polling, first in 99% of transactions; ~2% of transactions seen by polling
+never arrived over the stream, hence the polling backstop. The operator's settlement
+transactions appear in the public mempool a median 0.58 s before their block (58% visible).
 
 ### Source bankroll observability
 

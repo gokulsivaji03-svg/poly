@@ -1,11 +1,11 @@
-"""TradeEventStore: idempotent persistence of public wallet activity."""
+"""TradeTape: idempotent, exactly-once persistence of source wallet activity."""
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -15,7 +15,7 @@ from app.domain.events import SourceActivity
 INSERT_CHUNK = 1000
 
 
-class TradeEventStore:
+class TradeTape:
     def __init__(self, sm: async_sessionmaker[AsyncSession]) -> None:
         self._sm = sm
 
@@ -26,11 +26,17 @@ class TradeEventStore:
         *,
         detected_at: datetime,
         followed_since: datetime,
+        source: str = "chain",
     ) -> list[SourceEvent]:
         """Insert unseen rows; return only the newly inserted ones, oldest first.
 
-        Duplicates (repeated API rows, overlap re-reads) collide on ``event_key`` and are
-        silently ignored, so a repeated event can never be mistaken for a new trade.
+        Duplicates (backstop re-reads, stream + backstop overlap) collide on ``event_key``
+        and are silently ignored, so a repeated event can never be mistaken for a new trade.
+
+        The same trade can arrive from two sources (exchange logs and the Data API history
+        import) with differently rounded fields. A TRADE is dropped when the *other* source
+        already recorded the same (wallet, tx, token, side); a per-wallet transaction lock
+        makes that check atomic with the insert, so a trade is recorded once.
         """
         if not rows:
             return []
@@ -56,11 +62,39 @@ class TradeEventStore:
                 "slug": r.slug,
                 "is_combo": r.is_combo,
                 "is_backfill": r.block_ts < followed_since,
+                "source": source,
             }
             for r in rows
         ]
         inserted_ids: list[int] = []
         async with self._sm() as s, s.begin():
+            await s.execute(
+                text("SELECT pg_advisory_xact_lock(hashtext('source_events'), :w)"),
+                {"w": wallet_id},
+            )
+            hashes = {v["tx_hash"] for v in values if v["type"] == "TRADE" and v["tx_hash"]}
+            if hashes:
+                taken = set(
+                    (
+                        await s.execute(
+                            select(SourceEvent.tx_hash, SourceEvent.token_id, SourceEvent.side)
+                            .where(
+                                SourceEvent.wallet_id == wallet_id,
+                                SourceEvent.type == "TRADE",
+                                SourceEvent.source != source,
+                                SourceEvent.tx_hash.in_(hashes | {h.lower() for h in hashes}),
+                            )
+                        )
+                    ).all()
+                )
+                taken = {(h.lower(), t, sd) for h, t, sd in taken}
+                values = [
+                    v for v in values
+                    if v["type"] != "TRADE"
+                    or (v["tx_hash"].lower(), v["token_id"], v["side"]) not in taken
+                ]
+                if not values:
+                    return []
             # PostgreSQL caps bind parameters at 32767 per statement; chunk large backfills.
             for i in range(0, len(values), INSERT_CHUNK):
                 inserted_ids += (

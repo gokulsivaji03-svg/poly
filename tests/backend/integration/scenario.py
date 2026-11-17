@@ -7,7 +7,8 @@ from an in-memory REST source; time is a ManualClock. Nothing touches the networ
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from collections import Counter
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -97,6 +98,38 @@ def activity(
     }
 
 
+FILL_TOPIC = "0xd543adfd945773f1a62f74f0ee55a5e3b9b1a28262980ba90b1a89f2ea84d8ee"
+EXCHANGE = "0xe111180000d2663c0091e4f400237545b87b996b"
+
+
+def fill_log(
+    wallet: str,
+    *,
+    block: int,
+    side: str = "BUY",
+    size: str = "500",
+    price: str = "0.40",
+    token: str = YES,
+    tx: str = "0x01",
+    log_index: int = 0,
+) -> dict[str, Any]:
+    """An exchange fill event as returned by ``eth_getLogs`` (wallet is the order's maker)."""
+    shares = int(Decimal(size) * 10**6)
+    usdc = int(Decimal(size) * Decimal(price) * 10**6)
+    maker_amt, taker_amt = (usdc, shares) if side == "BUY" else (shares, usdc)
+    words = [0 if side == "BUY" else 1, int(token), maker_amt, taker_amt, 0, 0, 0]
+    return {
+        "address": EXCHANGE,
+        "topics": [
+            FILL_TOPIC, "0x" + "00" * 32, "0x" + wallet[2:].rjust(64, "0"), "0x" + "ee" * 32
+        ],
+        "data": "0x" + "".join(f"{w:064x}" for w in words),
+        "blockNumber": hex(block),
+        "transactionHash": tx,
+        "logIndex": hex(log_index),
+    }
+
+
 class World:
     """Mutable mocked upstream state. Routes read it on every request."""
 
@@ -105,14 +138,22 @@ class World:
         self.value: dict[str, str | None] = {}
         self.cash: dict[str, int | None] = {}
         self.positions: dict[str, list[dict[str, Any]]] = {}
+        self.pnl: dict[str, tuple[str, str]] = {}
         self.activity_errors = 0
         self.fee_rate: str | None = "0"
         self.resolution: dict[str, str] | None = None
+        self.head = 1000
+        self.block_ts: dict[int, int] = {}
+        self.fill_logs: list[dict[str, Any]] = []
+        self.rpc_calls: Counter[str] = Counter()
+        self.rpc_errors = 0
+        """Next N eth_getLogs calls fail with HTTP 503 (RPC outage)."""
 
     def install(self, router: respx.MockRouter) -> None:
         router.get(f"{DATA}/v2/activity").mock(side_effect=self._activity)
         router.get(f"{DATA}/v2/value").mock(side_effect=self._value)
         router.get(f"{DATA}/v2/positions").mock(side_effect=self._positions)
+        router.get(f"{DATA}/v2/user-pnl").mock(side_effect=self._user_pnl)
         router.get(f"{DATA}/v2/status").mock(
             return_value=httpx.Response(200, json={"data": {"serving": {"lag_seconds": 1}}})
         )
@@ -174,6 +215,21 @@ class World:
             },
         )
 
+    def _user_pnl(self, request: httpx.Request) -> httpx.Response:
+        user = request.url.params["user"].lower()
+        points = []
+        if user in self.pnl:
+            realized, unrealized = self.pnl[user]
+            points = [
+                {"timestamp": 1, "realized_pnl": -1.0, "unrealized_pnl": 0.0},
+                {
+                    "timestamp": 2,
+                    "realized_pnl": float(realized),
+                    "unrealized_pnl": float(unrealized),
+                },
+            ]
+        return httpx.Response(200, json={"data": {"proxy_wallet": user, "points": points}})
+
     def _gamma(self, request: httpx.Request) -> httpx.Response:
         m: dict[str, Any] = {
             "conditionId": COND,
@@ -185,9 +241,12 @@ class World:
             "orderPriceMinTickSize": 0.01,
             "orderMinSize": 1,
             "active": True,
-            "closed": False,
-            "acceptingOrders": True,
+            "closed": self.resolution is not None,
+            "acceptingOrders": self.resolution is None,
         }
+        # Real Gamma: the default listing hides closed markets; closed=true shows only them.
+        if (request.url.params.get("closed") == "true") != (self.resolution is not None):
+            return httpx.Response(200, json=[])
         if self.fee_rate is None:
             m["feesEnabled"] = True
         elif self.fee_rate == "0":
@@ -199,13 +258,34 @@ class World:
 
     def _rpc(self, request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
-        wallet = "0x" + body["params"][0]["data"][-40:]
+        method, params = body["method"], body["params"]
+        self.rpc_calls[method] += 1
+        if method == "eth_getLogs" and self.rpc_errors:
+            self.rpc_errors -= 1
+            return httpx.Response(503, json={"error": "busy"})
+
+        def ok(result: Any) -> httpx.Response:
+            return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": result})
+
+        if method == "eth_blockNumber":
+            return ok(hex(self.head))
+        if method == "eth_getBlockByNumber":
+            return ok({"timestamp": hex(self.block_ts.get(int(params[0], 16), 0))})
+        if method == "eth_getLogs":
+            f = params[0]
+            lo, hi = int(f["fromBlock"], 16), int(f["toBlock"], 16)
+            makers = set(f["topics"][2])
+            return ok([
+                lg for lg in self.fill_logs
+                if lo <= int(lg["blockNumber"], 16) <= hi and lg["topics"][2] in makers
+            ])
+        wallet = "0x" + params[0]["data"][-40:]
         cash = self.cash.get(wallet.lower())
         if cash is None:
             return httpx.Response(500)
         # Split evenly across pUSD / USDC.e calls (id 0 and 1).
         units = cash * 10**6 // 2 if body["id"] == 0 else cash * 10**6 - cash * 10**6 // 2
-        return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": hex(units)})
+        return ok(hex(units))
 
 
 def scenario_settings(db_url: str) -> Settings:
@@ -216,9 +296,7 @@ def scenario_settings(db_url: str) -> Settings:
         gamma_api_url=GAMMA,
         polygon_rpc_url=RPC,
         geoblock_url="https://geo.test/api/geoblock",
-        wallet_poll_interval_s=1,
         equity_snapshot_interval_s=60,
-        ingest_overlap_s=120,
         _env_file=None,  # type: ignore[call-arg]
     )
 
@@ -233,3 +311,24 @@ async def make_runtime(db_url: str, clock: ManualClock, rest: FakeRest, engine: 
         rest_books=rest,
         enable_stream=False,
     )
+
+
+async def chain_trade(
+    rt: Runtime,
+    world: World,
+    clock: ManualClock,
+    wallet: str,
+    *,
+    ago_s: float = 2,
+    **fill: Any,
+) -> int:
+    """The source trades on-chain ``ago_s`` seconds ago; run one feed pass.
+
+    ``fill`` takes ``fill_log`` keywords (side, size, price, token, tx, log_index). Each call
+    mines a new block. Returns the number of new trades the feed ingested.
+    """
+    world.head += 1
+    world.block_ts[world.head] = int((clock.now() - timedelta(seconds=ago_s)).timestamp())
+    fill.setdefault("tx", f"0x{world.head:x}{len(world.fill_logs):04x}")
+    world.fill_logs.append(fill_log(wallet, block=world.head, **fill))
+    return await rt.feed.tick()

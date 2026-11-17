@@ -152,7 +152,7 @@ function Metrics({ h }: { h: SystemHealth }) {
       />
       <Stat label="Terminal stream" value={<span className={status.state === 'connected' ? 'text-pos' : 'text-warn'}>{status.state}</span>} />
       <Stat label="HTTP errors 5m" value={<Num value={m.http_errors_5m} kind="int" />} />
-      <Stat label="Last poll" value={<TimeCell iso={m.last_poll_at} relative />} />
+      <Stat label="Last chain pass" value={<TimeCell iso={m.last_poll_at} relative />} />
       <Stat label="Mode" value={<span className="num">{h.mode}</span>} />
       <Stat
         label="Ledger"

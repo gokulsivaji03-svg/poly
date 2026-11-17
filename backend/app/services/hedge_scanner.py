@@ -50,15 +50,12 @@ from app.domain.hedge_state import (
 )
 from app.domain.market import FeeModel, MarketInfo, Side
 from app.domain.settings import HedgedSellPolicy, HedgeMode, StrategySettings
+from app.execution.orders import ExecutionRequest, ExecutionResult, Executor
+from app.execution.paper import apply_slippage
+from app.risk.pretrade import halt_reason
 from app.services.event_bus import EventBus
 from app.services.ledger import LedgerError, PortfolioLedger
 from app.services.market_data import MarketDataService
-from app.services.paper_execution import (
-    ExecutionRequest,
-    ExecutionResult,
-    PaperExecutionEngine,
-    apply_slippage,
-)
 from app.services.settings_service import SettingsService
 from app.services.system_events import SystemEventLog
 
@@ -127,7 +124,7 @@ class HedgeScannerService:
         self,
         sm: async_sessionmaker[AsyncSession],
         ledger: PortfolioLedger,
-        executor: PaperExecutionEngine,
+        executor: Executor,
         market_data: MarketDataService,
         settings: SettingsService,
         events: SystemEventLog,
@@ -213,6 +210,8 @@ class HedgeScannerService:
 
     @staticmethod
     def _derive(pos: HedgePosition, event: Ev) -> HedgeState:
+        if pos.state == HedgeState.SETTLED:
+            return HedgeState.SETTLED  # terminal: a late scan event must not reopen it
         mapping = {
             Ev.FILL_RECONCILED_FULL: HedgeState.FULLY_HEDGED,
             Ev.FILL_RECONCILED_PARTIAL: HedgeState.PARTIALLY_HEDGED,
@@ -256,7 +255,7 @@ class HedgeScannerService:
                 settings.hedge.enabled
                 and settings.hedge.mode is HedgeMode.AUTO_PAPER
                 and opp.quote.viable
-                and not settings.trading_halted
+                and halt_reason(settings) is None
             ):
                 await self.execute(key, manual=False)
         for key in set(self.opportunities) - seen:
@@ -358,12 +357,13 @@ class HedgeScannerService:
         cond, _, token = key.partition(":")
         async with self._locks[cond]:
             settings = await self._settings.get(refresh=True)
-            if settings.trading_halted:
+            halted = halt_reason(settings)
+            if halted is not None:
                 return {
                     "status": "REJECTED",
                     "order_id": None,
                     "matched_shares": "0",
-                    "reason": "TRADING_HALTED",
+                    "reason": halted.code,
                 }
             if not settings.hedge.enabled:
                 return {
@@ -508,8 +508,8 @@ class HedgeScannerService:
         """Under UNWIND_IF_BETTER, sell matched pairs only if both legs' bids beat $1/pair."""
         async with self._locks[condition_id]:
             settings = await self._settings.get(refresh=True)
-            if settings.trading_halted:
-                return "TRADING_HALTED"
+            if (halted := halt_reason(settings)) is not None:
+                return halted.code
             if settings.copy_.hedged_sell_policy is not HedgedSellPolicy.UNWIND_IF_BETTER:
                 return "POLICY_PRESERVE"
             if (await self._ledger.get_account(self.account_id)).mode == AccountMode.LIVE:
@@ -569,8 +569,8 @@ class HedgeScannerService:
                     acct = await s.get(Account, self.account_id, with_for_update=True)
                     if acct is None or acct.mode == AccountMode.LIVE:
                         return "PAPER_ONLY"
-                    if (await self._settings.get(refresh=True)).trading_halted:
-                        return "TRADING_HALTED"
+                    if halted := halt_reason(await self._settings.get(refresh=True)):
+                        return halted.code
                     now = self._clock.now()
                     if any(book.is_stale(now, max_age) for book, _ in legs):
                         return "STALE_BOOK"
@@ -659,8 +659,8 @@ class HedgeScannerService:
             acct = await s.get(Account, self.account_id, with_for_update=True)
             if acct is None or acct.mode == AccountMode.LIVE:
                 return {"proceeds": "0", "reason": "PAPER_ONLY"}
-            if (await self._settings.get(refresh=True)).trading_halted:
-                return {"proceeds": "0", "reason": "TRADING_HALTED"}
+            if halted := halt_reason(await self._settings.get(refresh=True)):
+                return {"proceeds": "0", "reason": halted.code}
             proceeds = await self._ledger.merge_matched_in(s, cond, self.account_id)
         if proceeds > ZERO:
             await self._events.record("PAIRS_MERGED", f"Simulated merge on {cond}: {proceeds}")

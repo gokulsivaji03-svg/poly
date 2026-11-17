@@ -252,15 +252,15 @@ const columns: ColumnDef<WalletSummary>[] = [
             <Tooltip>
               <TooltipTrigger asChild>
                 <span tabIndex={0} className="inline-flex items-center gap-1 text-neg outline-none">
-                  <AlertTriangle className="size-3" /> poll error
+                  <AlertTriangle className="size-3" /> observation error
                 </span>
               </TooltipTrigger>
               <TooltipContent>{w.last_error}</TooltipContent>
             </Tooltip>
           ) : w.freshness_s != null ? (
-            <span className="num">polled {w.freshness_s}s ago</span>
+            <span className="num">observed {w.freshness_s}s ago</span>
           ) : (
-            <span>never polled</span>
+            <span>never observed</span>
           )}
           {w.ingestion_delay_ms != null && <span className="num">· lag {fmtMs(w.ingestion_delay_ms)}</span>}
         </span>

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
@@ -97,17 +98,37 @@ class MarketMetadataClient:
         self._clock = clock
 
     async def fetch(self, condition_id: str) -> MarketInfo | None:
-        body = await self._http.get_json(
-            f"{self._gamma}/markets", {"condition_ids": condition_id, "limit": 5}
-        )
-        rows = body if isinstance(body, list) else body.get("data", [])
-        match = next(
-            (m for m in rows if str(m.get("conditionId", "")).lower() == condition_id.lower()), None
+        match = await self._find(
+            {"condition_ids": condition_id},
+            lambda m: str(m.get("conditionId", "")).lower() == condition_id.lower(),
         )
         if match is None:
             return None
         info = parse_gamma_market(match, self._clock.now())
         return await self._validate_complement(info)
+
+    async def fetch_by_token(self, token_id: str) -> MarketInfo | None:
+        """Market owning outcome token ``token_id`` (no complement validation)."""
+        match = await self._find(
+            {"clob_token_ids": token_id},
+            lambda m: token_id in {str(t) for t in _json_list(m.get("clobTokenIds"))},
+        )
+        return None if match is None else parse_gamma_market(match, self._clock.now())
+
+    async def _find(
+        self, params: dict[str, Any], is_match: Callable[[dict[str, Any]], bool]
+    ) -> dict[str, Any] | None:
+        # Gamma's default listing returns only open markets and ``closed=true`` only closed
+        # ones, so a market that just closed (and must now be settled) needs the second query.
+        for extra in ({}, {"closed": "true"}):
+            body = await self._http.get_json(
+                f"{self._gamma}/markets", {**params, "limit": 5, **extra}
+            )
+            rows = body if isinstance(body, list) else body.get("data", [])
+            match = next((m for m in rows if is_match(m)), None)
+            if match is not None:
+                return match
+        return None
 
     async def _validate_complement(self, info: MarketInfo) -> MarketInfo:
         if not info.is_standard_binary:

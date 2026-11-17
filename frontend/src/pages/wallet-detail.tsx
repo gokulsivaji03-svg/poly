@@ -232,7 +232,7 @@ function Charts({ w }: { w: WalletDetail }) {
           {hasEquity ? (
             <TimeSeriesChart series={equitySeries} height={224} testId="wallet-equity-chart" />
           ) : (
-            <EmptyState icon={LineChart} title="No equity snapshots yet" description="Snapshots are taken as the wallet is polled." />
+            <EmptyState icon={LineChart} title="No equity snapshots yet" description="Snapshots are taken by the wallet observer." />
           )}
         </div>
       </Panel>
@@ -278,7 +278,7 @@ function TradeHistory({ walletId }: { walletId: string }) {
         onRetry={() => void q.refetch()}
         columnToggle
         maxHeight={520}
-        empty={<EmptyState title="No trades detected yet" description="Trades appear as soon as the wallet is polled." />}
+        empty={<EmptyState title="No trades detected yet" description="Trades appear after a followed wallet's Polygon fill is observed." />}
       />
       {q.hasNextPage && (
         <div className="flex justify-center border-t p-2">

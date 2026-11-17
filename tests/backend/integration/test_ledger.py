@@ -5,8 +5,9 @@ from decimal import Decimal
 import pytest
 from app.db.models import AccountMode, LotOrigin, OrderKind, OrderStatus
 from app.domain.market import Side
+from app.execution.orders import ExecutionRequest
+from app.execution.paper import PaperExecutor
 from app.services.ledger import PortfolioLedger
-from app.services.paper_execution import ExecutionRequest, PaperExecutionEngine
 
 from factories import COND, NO, NOW, YES, D, FakeBooks, book, fees
 
@@ -28,7 +29,7 @@ def books(clock):
 
 @pytest.fixture
 def engine(sm, ledger, books, clock):
-    return PaperExecutionEngine(sm, ledger, books, clock)
+    return PaperExecutor(sm, ledger, books, clock)
 
 
 async def buy(engine, ledger, acct, token, budget, key, *, origin=LotOrigin.COPY, rate="0"):

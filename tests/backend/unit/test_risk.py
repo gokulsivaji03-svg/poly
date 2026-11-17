@@ -1,7 +1,7 @@
 from datetime import timedelta
 
-from app.domain.risk import PortfolioSnapshot, evaluate_buy
 from app.domain.settings import RiskSettings
+from app.risk.pretrade import PortfolioSnapshot, check_buy
 
 from factories import COND, NOW, YES, D, book
 
@@ -21,9 +21,17 @@ def snap(**kw):
 
 
 def run(
-    budget="20", *, portfolio=None, b=None, source_price="0.50", delay_s=5, halted=False, **risk
+    budget="20",
+    *,
+    portfolio=None,
+    b=None,
+    source_price="0.50",
+    delay_s=5,
+    halted=False,
+    buys_in_market=0,
+    **risk,
 ):
-    return evaluate_buy(
+    return check_buy(
         budget=D(budget),
         token_id=YES,
         condition_id=COND,
@@ -34,7 +42,23 @@ def run(
         portfolio=portfolio or snap(),
         settings=RiskSettings(**risk),
         trading_halted=halted,
+        buys_in_market=buys_in_market,
     )
+
+
+def test_rejects_entries_above_max_entry_price():
+    d = run(b=book(asks=[("0.95", "1000")]), source_price="0.95", max_entry_price=D("0.90"))
+    assert d.reject_code == "ENTRY_PRICE_TOO_HIGH"
+
+
+def test_limit_price_never_exceeds_max_entry_price():
+    d = run(b=book(asks=[("0.88", "1000")]), source_price="0.89", max_entry_price=D("0.90"))
+    assert not d.rejected and d.limit_price == D("0.90")
+
+
+def test_rejects_after_max_buys_per_market():
+    assert run(buys_in_market=9, max_buys_per_market=10).rejected is False
+    assert run(buys_in_market=10, max_buys_per_market=10).reject_code == "MAX_BUYS_PER_MARKET"
 
 
 def test_approves_within_limits():

@@ -156,6 +156,9 @@ def simulate_buy(
         if not legs:
             return _empty(Side.BUY, limit_price, "BELOW_SHARE_STEP_OR_LIMIT")
         gross, net, notional, fee = _buy_totals(legs, fees)
+        if net <= ZERO:
+            # Share fees consumed every delivered share: never pay for nothing.
+            return _empty(Side.BUY, limit_price, "BELOW_SHARE_STEP_OR_LIMIT")
         cash_out = _buy_cash_out(notional, fee, fees)
         over_budget = budget is not None and cash_out > budget
         over_target = target_net_shares is not None and net > target_net_shares
@@ -206,6 +209,9 @@ def simulate_sell(
     notional = sum((lg.price * lg.gross_shares for lg in legs), ZERO)
     fee = usdc_up(sum((fees.schedule.fee_usdc(lg.gross_shares, lg.price) for lg in legs), ZERO))
     proceeds = notional.quantize(USDC_QUANTUM, rounding=ROUND_DOWN) - fee
+    if proceeds <= ZERO:
+        # Rounded fee meets or exceeds rounded proceeds: selling would cost cash.
+        return _empty(Side.SELL, limit_price, "PROCEEDS_BELOW_FEE")
     consumed_all = len(legs) == len(book.bids) and legs[-1].gross_shares == book.bids[-1].size
     return FillSimulation(
         side=Side.SELL,

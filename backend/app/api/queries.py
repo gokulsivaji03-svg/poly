@@ -72,8 +72,8 @@ def portfolio_summary(view: PortfolioView, day_pnl: Decimal) -> dict[str, Any]:
 
 
 async def portfolio(rt: Runtime) -> dict[str, Any]:
-    view = await rt.copy.portfolio()
-    return portfolio_summary(view, await rt.copy.day_pnl(view))
+    view = await rt.portfolio.view()
+    return portfolio_summary(view, await rt.portfolio.day_pnl(view))
 
 
 async def dashboard(rt: Runtime) -> dict[str, Any]:
@@ -594,8 +594,11 @@ async def system_metrics(rt: Runtime) -> dict[str, Any]:
         "book_age_ms_p50": _p([int(b) for _, b in ords if b is not None], 0.5),
         "ws_connected": bool(rt.stream and rt.stream.connected),
         "ws_reconnects": rt.stream.reconnects if rt.stream else 0,
+        "chain_stream_connected": rt.feed.stream_connected,
+        "chain_stream_reconnects": rt.feed.stream_reconnects,
+        "chain_detection_lag_s": rt.feed.last_lag_s,
         "http_errors_5m": rt.http.stats.errors_since(300),
-        "last_poll_at": ts(rt.monitor.last_poll_at),
+        "last_poll_at": ts(rt.feed.last_tick_at),
     }
 
 
