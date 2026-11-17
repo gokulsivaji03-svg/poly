@@ -24,6 +24,18 @@ def test_pending_decode_predicts_every_confirmed_fill_of_the_transaction():
         assert all(f.block_number is None and f.log_index is None for f in pending)
 
 
+def test_pending_decode_reproduces_every_confirmed_fill_exactly_including_the_taker():
+    for case in CASES:
+        pending = sorted(
+            (f.maker, f.token_id, f.side, f.shares, f.usdc)
+            for f in decode_pending_fills(case["tx"])
+        )
+        confirmed = sorted(
+            (f.maker, f.token_id, f.side, f.shares, f.usdc) for f in map(decode_fill, case["logs"])
+        )
+        assert pending == confirmed, case["tx"]["hash"]
+
+
 def test_other_transactions_decode_to_nothing():
     tx = CASES[0]["tx"]
     assert decode_pending_fills({**tx, "to": "0x" + "00" * 20}) == []

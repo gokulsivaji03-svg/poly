@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from typing import Any
 
@@ -106,28 +106,61 @@ def decode_pending_fills(tx: dict[str, Any]) -> list[ChainFill]:
         )
     except (ValueError, DecodingError):
         return []
-    out: list[ChainFill] = []
-    for order, filled in [(taker, taker_fill), *zip(makers, maker_fills, strict=False)]:
-        side = {0: Side.BUY, 1: Side.SELL}.get(order[6])
-        maker_amount, taker_amount = int(order[4]), int(order[5])
-        if side is None or filled <= 0 or maker_amount <= 0 or taker_amount <= 0:
-            continue
-        given = Decimal(filled) / DECIMALS
-        got = Decimal(filled) * taker_amount / maker_amount / DECIMALS
-        usdc, shares = (given, got) if side is Side.BUY else (got, given)
-        out.append(
-            ChainFill(
-                tx_hash=str(tx["hash"]).lower(),
-                log_index=None,
-                block_number=None,
-                maker=str(order[1]).lower(),
-                side=side,
-                token_id=str(order[3]),
-                shares=shares,
-                usdc=usdc,
-            )
-        )
-    return out
+    tx_hash = str(tx["hash"]).lower()
+    legs = [
+        replace(leg, tx_hash=tx_hash)
+        for order, filled in [(taker, taker_fill), *zip(makers, maker_fills, strict=False)]
+        if (leg := _order_leg(order, filled)) is not None
+    ]
+    if not legs or legs[0].maker != str(taker[1]).lower():
+        return legs
+    priced = _taker_from_makers(legs[0], legs[1:])
+    return [priced, *legs[1:]] if priced is not None else legs
+
+
+def _order_leg(order: tuple[Any, ...], filled: int) -> ChainFill | None:
+    """One order's fill at its own limit ratio, exact for a resting (maker) order."""
+    side = {0: Side.BUY, 1: Side.SELL}.get(order[6])
+    maker_amount, taker_amount = int(order[4]), int(order[5])
+    if side is None or filled <= 0 or maker_amount <= 0 or taker_amount <= 0:
+        return None
+    given = Decimal(filled) / DECIMALS
+    got = Decimal(filled * taker_amount // maker_amount) / DECIMALS  # on-chain: floor in 1e-6
+    usdc, shares = (given, got) if side is Side.BUY else (got, given)
+    return ChainFill(
+        tx_hash="",
+        log_index=None,
+        block_number=None,
+        maker=str(order[1]).lower(),
+        side=side,
+        token_id=str(order[3]),
+        shares=shares,
+        usdc=usdc,
+    )
+
+
+def _taker_from_makers(taker: ChainFill, makers: list[ChainFill]) -> ChainFill | None:
+    """The taker's actual fill, from what its makers gave and got (before fees).
+
+    Same token: shares and USDC change hands directly. Complement token: a BUY against
+    complement BUYs mints pairs, a SELL against complement SELLs merges them, so the
+    taker's USDC is the pairs' $1 minus the makers' side.
+    """
+    if not makers:
+        return None
+    same = [m for m in makers if m.token_id == taker.token_id]
+    other = [m for m in makers if m.token_id != taker.token_id]
+    if same and other:
+        return None  # mixed match: keep the conservative limit price
+    if same:
+        shares = sum((m.shares for m in same), Decimal(0))
+        usdc = sum((m.usdc for m in same), Decimal(0))
+    else:
+        shares = sum((m.shares for m in other), Decimal(0))
+        usdc = shares - sum((m.usdc for m in other), Decimal(0))
+    if shares <= 0 or usdc <= 0:
+        return None
+    return replace(taker, shares=shares, usdc=usdc)
 
 
 def _topic(address: str) -> str:
