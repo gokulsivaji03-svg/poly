@@ -24,7 +24,6 @@ Requires PostgreSQL 17, Python 3.12+, [uv](https://docs.astral.sh/uv/), Node 22+
 ```sh
 # Once, with PostgreSQL running:
 createdb polycopy
-createdb polycopy_test # only needed for tests
 # From the repository root:
 npm run dev:all
 ```
@@ -76,7 +75,7 @@ npx playwright install chromium
 npm test
 ```
 
-Tests clear the dedicated `polycopy_test` database. Browser tests change and restore sizing,
+Integration tests create a throwaway `polycopy_test_<run>` database and drop it afterwards. Browser tests change and restore sizing,
 pause/resume strategies, and capture screenshots; run them against a development paper account.
 
 ## Design and operational boundaries

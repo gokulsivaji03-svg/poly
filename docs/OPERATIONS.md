@@ -7,7 +7,6 @@ Requires Python 3.12+, uv, Node 22+, npm, and PostgreSQL 17. No private key is r
 ```sh
 # One-time database setup; PostgreSQL must already be running:
 createdb polycopy
-createdb polycopy_test # tests only
 # Repository root:
 npm run dev:all
 ```
@@ -66,4 +65,4 @@ npm run lint
 npm run build
 ```
 
-Tests use the dedicated `polycopy_test` database and clear its tables. Never point the test URL at a funded or production database. Back up PostgreSQL regularly; do not delete orders or ledger entries to repair a balance. Inspect `/api/system/health`, reconciliation events and source freshness. Public API outages and unobservable balances must remain visibly unavailable rather than zero.
+Integration tests create and drop their own `polycopy_test_<run>` database next to the one `POLYCOPY_TEST_DATABASE_URL` names, so the role needs `CREATEDB`. Never point the test URL at a funded or production database. Back up PostgreSQL regularly; do not delete orders or ledger entries to repair a balance. Inspect `/api/system/health`, reconciliation events and source freshness. Public API outages and unobservable balances must remain visibly unavailable rather than zero.
