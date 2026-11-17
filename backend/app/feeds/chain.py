@@ -7,7 +7,8 @@ connection caching block timestamps so a pushed fill needs no RPC round trip. An
 A restart resumes from the cursor, so outages are replayed rather than skipped.
 
 Each fill becomes a ``source="chain"`` row on the trade tape and is handed to the copy
-engine. A fill whose token Gamma cannot map yet is retried for ``unmapped_ttl`` before it
+engine without blocking the next fill: each wallet's copies run in order, wallets in
+parallel. A fill whose token Gamma cannot map yet is retried for ``unmapped_ttl`` before it
 is reported and dropped. Logs flagged ``removed`` (reorgs) are ignored.
 """
 
@@ -27,7 +28,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.clock import Clock
-from app.db.models import FeedCursor, WatchedWallet
+from app.db.models import FeedCursor, SourceEvent, WatchedWallet
 from app.domain.events import ActivityType, SourceActivity, assign_event_keys
 from app.domain.market import MarketInfo
 from app.engine.copy_engine import CopyEngine
@@ -84,6 +85,7 @@ class ChainFeed:
         self._tokens: dict[str, MarketInfo] = {}
         self._unmapped: dict[tuple[str, int], tuple[ChainFill, datetime]] = {}
         self._wallets: dict[str, WatchedWallet] = {}
+        self._copying: dict[int, asyncio.Task[None]] = {}
         self._stream_wallets: frozenset[str] = frozenset()
         self._resubscribe = asyncio.Event()
         self.stream_connected = False
@@ -111,6 +113,7 @@ class ChainFeed:
                 stream.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await stream
+            await self.drain()
 
     async def _stream_forever(self, stop: asyncio.Event) -> None:
         assert self._ws_url is not None
@@ -215,12 +218,43 @@ class ChainFeed:
         for ev in live:
             self._bus.publish("source_trade", {"id": ev.id})
             self.last_lag_s = (detected_at - ev.block_ts).total_seconds()
+        self._dispatch(wallet, new)
         if live:
             await self._touch_last_trade(wallet.id, max(ev.block_ts for ev in live))
-        for ev in new:
-            await self._engine.on_trade(ev, wallet)
-        self._bus.publish("wallet", {"id": wallet.id})
         return len(new)
+
+    def _dispatch(self, wallet: WatchedWallet, events: list[SourceEvent]) -> None:
+        """Copy ``events`` without holding up detection.
+
+        A wallet's copies run in ingestion order (a SELL must see the BUY's lots); different
+        wallets copy concurrently.
+        """
+        prev = self._copying.get(wallet.id)
+        task = asyncio.create_task(self._copy(prev, wallet, events))
+        self._copying[wallet.id] = task
+
+        def forget(t: asyncio.Task[None], wallet_id: int = wallet.id) -> None:
+            if self._copying.get(wallet_id) is t:
+                del self._copying[wallet_id]
+
+        task.add_done_callback(forget)
+
+    async def _copy(
+        self, prev: asyncio.Task[None] | None, wallet: WatchedWallet, events: list[SourceEvent]
+    ) -> None:
+        if prev is not None:
+            await asyncio.wait({prev})
+        for ev in events:
+            try:
+                await self._engine.on_trade(ev, wallet)
+            except Exception:  # recorded; restart recovery resumes PENDING signals
+                log.exception("copy failed", extra={"source_event_id": ev.id})
+        self._bus.publish("wallet", {"id": wallet.id})
+
+    async def drain(self) -> None:
+        """Wait until every dispatched copy has finished."""
+        while self._copying:
+            await asyncio.wait(set(self._copying.values()))
 
     async def _to_activity(self, wallet: WatchedWallet, f: ChainFill) -> SourceActivity | None:
         market = await self._market_for(f.token_id)
