@@ -84,6 +84,36 @@ sequenceDiagram
   VN->>LD: settle fill and release reservation atomically
 ```
 
+## Detection
+
+A followed wallet's trade is seen three ways. The first sighting wins and the rest dedupe.
+
+| Feed | How | Lead (measured) |
+|---|---|---|
+| Mempool | `newPendingTransactions` with full bodies; operator `matchOrders` calldata decoded per order (`decode_pending_fills`) | 85% of fills seen pending first, median 836 ms (p10 331, p90 1,350) before their log; 18,369 of 18,371 maker-asset amounts equal (`scripts/mempool_probe.py`, 10 min, 21,553 fills) |
+| Log push | `logs` subscription filtered on the maker topic | about block arrival |
+| Backstop | `eth_getLogs` from a persisted cursor | every 2 s while the stream is up, 0.5 s while down |
+
+Each feed has its own socket, so the pending firehose never delays log frames. The tape drops a TRADE when another source already recorded the same (wallet, tx, token, side), so a pending sighting and its confirmed log become one copy. Mempool rows carry `confirmation`. It starts PENDING and becomes CONFIRMED when any log of the transaction arrives. Otherwise the backstop checks the receipt after 90 s. A revert, or no receipt after 10 min, is an ERROR event naming the copied signals.
+
+`MarketCatalog` polls Gamma's newest listings every 30 s. A sharp's first fill in a new market therefore finds its token mapped and its metadata cached. Metadata past its 5 min TTL is served at once, up to 30 min old, while it refreshes in the background.
+
+## Latency budget
+
+Every copy signal records `stage_us`: monotonic microseconds from fill receipt to each stage. `scripts/latency_report.py` summarizes a database. `pytest -m bench -s` runs 4 wallets × 50 fills through the stream handler against real PostgreSQL with faked network.
+
+| stage | p50 (local bench) | what it is |
+|---|---|---|
+| taped | 1.4 ms | source event committed |
+| started | 1.1 ms | journal row, settings read, wallet queue, market lock |
+| context | 3.5 ms | market, book, equity, portfolio reads in parallel |
+| decided | 0.02 ms | strategy and pre-trade risk |
+| reserved | 1.0 ms | atomic cash reservation |
+| executed | 3.5 ms | idempotent order insert, fill, ledger booking |
+| **total** | **10.8 ms** | 34 SQL statements; ~45% PostgreSQL wait, ~40% SQLAlchemy CPU |
+
+The local service time is small next to the network. Detection takes hundreds of milliseconds. A CLOB order from the US West Coast takes about 183 ms. See [LATENCY.md](LATENCY.md) for the network and hardware plan.
+
 ## Core invariants
 
 1. **No float money.** `Decimal` end to end; JSON numbers from providers are parsed through
@@ -120,6 +150,8 @@ detection delay, price drift vs source, slippage vs best ask, min liquidity) and
 order-book walk, which decides what is executable.
 
 ## Hedging
+
+Off by default (`HedgeSettings.enabled = False`). On a directional sharp, copy plus hedge trailed holding in every backtest configuration. See [STRATEGY.md](STRATEGY.md). The machinery below stays for operators who want to lock a gain.
 
 For each open position the scanner walks the complementary token's asks against the
 position's lots (cheapest cost basis first) and keeps only segments whose **marginal** net

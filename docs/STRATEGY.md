@@ -27,7 +27,16 @@ Reading:
 - Returns are concentrated. One market ("US x Iran permanent peace deal by June 15, 2026?") contributed +$2,109 of the +$3,445 at 0¢. Drawdowns of 42% and more are normal.
 - At $1,000 the sizing is the binding constraint. 12,736 source BUYs were skipped as `BELOW_MIN_ORDER`, because a proportional copy of a $192k wallet is often under $1. A larger bankroll or a sizing multiplier copies more of the sharp's flow.
 
-Limits: there is no order book, so depth, queue position and market impact are missing. CONVERSION events are ignored. Source equity is a lower bound, so allocation percentages are upper bounds.
+Bankroll barely changes the return at 0.5¢ premium. The skipped small orders carry little of the edge, because the sharp's large orders do:
+
+| bankroll | return | max drawdown | buys skipped under $1 |
+|---|---|---|---|
+| $1,000 | +226% | 44% | 13,045 |
+| $5,000 | +236% | 46% | 9,287 |
+| $25,000 | +235% | 47% | 5,117 |
+| $100,000 | +234% | 47% | 1,958 |
+
+Limits: there is no order book, so depth, queue position and market impact are missing. Large bankrolls would move thin markets, so the bigger rows are optimistic. CONVERSION events are ignored. Source equity is a lower bound, so allocation percentages are upper bounds.
 
 ## Hedging gives the edge away
 

@@ -5,10 +5,11 @@ Real public wallet activity, executable order-book simulation, one auditable por
 
 ## What it does
 
-- Monitors public International wallets through Data API v2; persists activity and restart checkpoints.
+- Detects followed wallets' fills from pending Polygon `matchOrders` transactions (median 836 ms before their block), exchange log push and a block backstop; Data API v2 imports history.
 - Sizes copies from estimated pre-trade source equity, with explicit unknown/lower-bound coverage.
 - Walks real order-book depth with Decimal accounting, fees, slippage, delay and atomic cash reservations.
-- Scans exact binary complements for fee-adjusted profitable pairs; reconciles acquired shares before reporting locked profit.
+- Records per-stage latency from fill receipt on every copy; a benchmark and report script measure it.
+- Optional complement hedging (off by default: it trailed holding in every backtest of a directional sharp).
 - Preserves matched hedges when a source sells. Supports simulated merge and observed resolution accounting.
 - Streams portfolio, trades, opportunities and health to an authenticated React terminal.
 - Replays recorded books and metadata in an isolated PostgreSQL schema without future-price fallback.
