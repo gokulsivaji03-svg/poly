@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.clock import Clock
 from app.core.money import ZERO
+from app.core.stages import StageTimer
 from app.db.models import CopySignal, Order, OrderStatus, SignalStatus, SourceEvent
 from app.domain.reasons import Reason
 from app.execution.orders import ExecutionResult
@@ -74,9 +75,17 @@ class SignalJournal:
         return row
 
     async def finish(
-        self, sig: CopySignal, status: SignalStatus, reasons: list[Reason], **fields: Any
+        self,
+        sig: CopySignal,
+        status: SignalStatus,
+        reasons: list[Reason],
+        *,
+        timer: StageTimer | None = None,
+        **fields: Any,
     ) -> CopySignal:
         decided_at = fields.pop("decided_at", None) or self._clock.now()
+        if timer is not None:
+            fields["stage_us"] = timer.as_us()
         return await self.save(
             sig,
             status=status,
@@ -92,6 +101,7 @@ class SignalJournal:
         result: ExecutionResult,
         reasons: list[Reason],
         decided_at: datetime,
+        timer: StageTimer,
     ) -> CopySignal:
         reasons = list(reasons)
         if result.status is OrderStatus.PARTIALLY_FILLED:
@@ -111,6 +121,7 @@ class SignalJournal:
             sig,
             _STATUS.get(result.status, SignalStatus.FAILED),
             reasons,
+            timer=timer,
             decided_at=decided_at,
             order_id=result.order_id,
             executed_at=self._clock.now() if fill else None,
