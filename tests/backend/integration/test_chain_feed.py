@@ -326,3 +326,13 @@ async def test_unconfirmed_pending_fill_is_settled_from_its_receipt(env, receipt
         assert event.kind == f"PENDING_FILL_{outcome}" and event.level == "ERROR"
         [sig] = await rows(rt, CopySignal)
         assert event.data["signal_ids"] == [sig.id]
+
+
+async def test_a_logs_node_behind_the_head_retries_the_same_range_next_pass(env):
+    rt, clock, world, _w, _rest = env
+    await rt.feed.tick()
+    append_fill(world, clock, tx="0xlag")
+    world.logs_node_behind = True
+    assert await rt.feed.tick() == 0
+    world.logs_node_behind = False
+    assert await rt.feed.tick() == 1, "the cursor did not skip the unread range"

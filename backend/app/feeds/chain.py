@@ -34,6 +34,7 @@ from app.domain.events import ActivityType, SourceActivity, assign_event_keys
 from app.domain.market import MarketInfo
 from app.engine.copy_engine import CopyEngine
 from app.feeds.tape import TradeTape
+from app.integrations.http import UpstreamError
 from app.integrations.polygon import (
     ChainFill,
     PolygonRpc,
@@ -261,7 +262,15 @@ class ChainFeed:
         ingested = await self._retry_unmapped()
         if head >= self._next_block:
             to_block = min(head, self._next_block + self._max_range - 1)
-            fills = await self._rpc.fills(self._next_block, to_block, list(self._wallets))
+            try:
+                fills = await self._rpc.fills(self._next_block, to_block, list(self._wallets))
+            except UpstreamError as exc:
+                if "invalid block range" not in str(exc):
+                    raise
+                # A load-balanced node behind the head another node just reported: the
+                # cursor stays put and the next pass reads the same range.
+                self.last_tick_at = self._clock.now()
+                return ingested
             timer = StageTimer()
             by_wallet: dict[str, list[ChainFill]] = {}
             for f in fills:
