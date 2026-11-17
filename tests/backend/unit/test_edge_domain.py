@@ -15,8 +15,6 @@ from app.domain.hedge_state import (
     transition,
 )
 from app.domain.market import FeeSchedule, MarketInfo, OutcomeToken
-from app.domain.risk import PortfolioSnapshot, evaluate_buy
-from app.domain.sell_policy import plan_copy_sell
 from app.domain.settings import (
     HedgedSellPolicy,
     HedgeSettings,
@@ -26,7 +24,9 @@ from app.domain.settings import (
     SizingSettings,
     UnknownEquityPolicy,
 )
-from app.domain.sizing import size_copy
+from app.risk.pretrade import PortfolioSnapshot, check_buy
+from app.strategy.sell_policy import plan_copy_sell
+from app.strategy.sizing import size_copy
 
 from factories import COND, NO, NOW, YES, D, book, fees, market
 
@@ -151,7 +151,7 @@ def risk(
     buys_in_market=0,
     **settings,
 ):
-    return evaluate_buy(
+    return check_buy(
         budget=D(budget),
         token_id=YES,
         condition_id=COND,

@@ -1,4 +1,4 @@
-"""TradeEventStore: idempotent persistence of public wallet activity."""
+"""TradeTape: idempotent, exactly-once persistence of source wallet activity."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from app.domain.events import SourceActivity
 INSERT_CHUNK = 1000
 
 
-class TradeEventStore:
+class TradeTape:
     def __init__(self, sm: async_sessionmaker[AsyncSession]) -> None:
         self._sm = sm
 
@@ -26,17 +26,17 @@ class TradeEventStore:
         *,
         detected_at: datetime,
         followed_since: datetime,
-        source: str = "api",
+        source: str = "chain",
     ) -> list[SourceEvent]:
         """Insert unseen rows; return only the newly inserted ones, oldest first.
 
-        Duplicates (repeated API rows, overlap re-reads) collide on ``event_key`` and are
-        silently ignored, so a repeated event can never be mistaken for a new trade.
+        Duplicates (backstop re-reads, stream + backstop overlap) collide on ``event_key``
+        and are silently ignored, so a repeated event can never be mistaken for a new trade.
 
-        The same trade can arrive from two sources (Data API and exchange logs) with
-        differently rounded fields. A TRADE is dropped when the *other* source already
-        recorded the same (wallet, tx, token, side); a per-wallet transaction lock makes
-        that check atomic with the insert, so a trade is copied once whichever source wins.
+        The same trade can arrive from two sources (exchange logs and the Data API history
+        import) with differently rounded fields. A TRADE is dropped when the *other* source
+        already recorded the same (wallet, tx, token, side); a per-wallet transaction lock
+        makes that check atomic with the insert, so a trade is recorded once.
         """
         if not rows:
             return []

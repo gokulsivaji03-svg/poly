@@ -20,7 +20,7 @@ from app.db.models import (
 )
 from app.domain.hedge_state import HedgeState
 from app.services.ledger import InsufficientInventory, LedgerError
-from scenario import COND, NO, WALLET_A, YES, FakeRest, World, activity, make_runtime
+from scenario import COND, NO, WALLET_A, YES, FakeRest, World, chain_trade, make_runtime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -63,8 +63,7 @@ async def copy_yes(rt, clock, world, *, wallet=WALLET_A):
     w = await rt.registry.add(wallet)
     await rt.estimator.snapshot(w)
     clock.advance(5)
-    world.activity[wallet] = [activity(wallet, ts=clock.now(), tx="0xbuy")]
-    await rt.monitor.poll_once(await rt.registry.get(w.id))
+    assert await chain_trade(rt, world, clock, wallet, tx="0xbuy") == 1
     return w
 
 
@@ -90,7 +89,7 @@ async def test_alert_only_then_manual_hedge_locks_profit(env, world):
     res = await rt.hedger.execute(KEY)
     assert res["status"] == "FILLED", res
     assert await hedge_state(rt) is HedgeState.FULLY_HEDGED
-    view = await rt.copy.portfolio()
+    view = await rt.portfolio.view()
     assert view.locked_profit == D("5")
     assert view.cash == D("1000") - D("40") - D("55")
     assert await rt.ledger.verify(rt.account_id) == []
@@ -129,7 +128,7 @@ async def test_liquidity_vanishing_before_execution_gives_partial_hedge(env, wor
     lots = await rt.ledger.open_lots(rt.account_id)
     yes = next(lt for lt in lots if lt.token_id == YES)
     assert yes.matched_shares == D("40")
-    view = await rt.copy.portfolio()
+    view = await rt.portfolio.view()
     assert view.locked_profit == D("40") - D("16") - D("22")
     assert (await rt.ledger.get_account(rt.account_id)).reserved == 0
     assert await rt.ledger.verify(rt.account_id) == []
@@ -151,20 +150,22 @@ async def test_concurrent_hedge_requests_place_one_order(env, world):
 async def test_source_sell_after_full_hedge_preserves_pairs(env, world):
     rt, clock, rest = env
     rest.set(NO, asks=[("0.55", "1000")])
-    w = await copy_yes(rt, clock, world)
+    await copy_yes(rt, clock, world)
     clock.advance(6)
     await rt.hedger.execute(KEY)
     world.positions[WALLET_A] = []
     clock.advance(5)
-    world.activity[WALLET_A].append(
-        activity(WALLET_A, ts=clock.now(), side="SELL", size="500", tx="0xsell")
+    assert (
+        await chain_trade(
+            rt, world, clock, WALLET_A, side="SELL", size="500", tx="0xsell"
+        )
+        == 1
     )
-    await rt.monitor.poll_once(await rt.registry.get(w.id))
     async with rt.sm() as s:
         sell = await s.scalar(select(CopySignal).where(CopySignal.side == "SELL"))
     assert sell.status == SignalStatus.SKIPPED
     assert "MATCHED_PAIRS_PRESERVED" in {r["code"] for r in sell.reasons["items"]}
-    view = await rt.copy.portfolio()
+    view = await rt.portfolio.view()
     assert view.locked_profit == D("5")
     assert await hedge_state(rt) is HedgeState.FULLY_HEDGED
 

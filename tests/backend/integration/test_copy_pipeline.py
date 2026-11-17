@@ -1,6 +1,5 @@
 """End-to-end copy pipeline against a deterministic mocked Polymarket."""
 
-import asyncio
 from datetime import timedelta
 from decimal import Decimal
 
@@ -8,7 +7,18 @@ import pytest
 import respx
 from app.core.clock import ManualClock
 from app.db.models import CopySignal, SignalStatus, SourceEvent, WalletEquitySnapshot
-from scenario import NO, WALLET_A, WALLET_B, YES, FakeRest, World, activity, make_runtime
+from scenario import (
+    NO,
+    WALLET_A,
+    WALLET_B,
+    YES,
+    FakeRest,
+    World,
+    activity,
+    chain_trade,
+    fill_log,
+    make_runtime,
+)
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -82,16 +92,20 @@ async def test_observed_pnl_uses_account_pnl_not_lingering_positions(env, world)
 
 async def test_proportional_copy_end_to_end(env, world):
     rt, clock, _ = env
-    w = await add_and_snapshot(rt, WALLET_A, world=world)
+    await add_and_snapshot(rt, WALLET_A, world=world)
     clock.advance(30)
     # Source with ~$10,000 equity buys $200 (2%). User has $500 -> $10 target.
-    world.activity[WALLET_A] = [
-        activity(
-            WALLET_A, ts=clock.now() - timedelta(seconds=5), size="500", price="0.40", tx="0xaa"
-        )
-    ]
-    result = await rt.monitor.poll_once(w)
-    assert result.new_trades == 1
+    result = await chain_trade(
+        rt,
+        world,
+        clock,
+        WALLET_A,
+        ago_s=5,
+        size="500",
+        price="0.40",
+        tx="0xaa",
+    )
+    assert result == 1
     [sig] = await signals(rt)
     assert sig.status == SignalStatus.EXECUTED, sig.reasons
     assert sig.source_alloc_pct == D("0.02")
@@ -99,58 +113,55 @@ async def test_proportional_copy_end_to_end(env, world):
     assert sig.filled_shares == D("25")
     assert sig.filled_cost == D("10")
     assert sig.detection_lag_ms == 5000
-    view = await rt.copy.portfolio()
+    view = await rt.portfolio.view()
     assert view.cash == D("490")
     assert await rt.ledger.verify(rt.account_id) == []
 
 
-async def test_duplicate_and_out_of_order_events(env, world):
+async def test_duplicate_push_and_out_of_order_trade(env, world):
     rt, clock, _ = env
-    w = await add_and_snapshot(rt, WALLET_A, world=world)
-    clock.advance(120)  # late trade below must still postdate followed_since
-    t0 = clock.now() - timedelta(seconds=3)
-    row = activity(WALLET_A, ts=t0, tx="0x01")
-    world.activity[WALLET_A] = [row, dict(row)]  # two identical fills in one tx
-    await rt.monitor.poll_once(await rt.registry.get(w.id))
-    assert len(await signals(rt)) == 2  # identical fills are distinct events (ordinal)
-    # Repeat the same page plus a late-indexed older trade (out of order).
-    late = activity(WALLET_A, ts=t0 - timedelta(seconds=60), tx="0x00", size="50")
-    world.activity[WALLET_A] = [row, dict(row), late]
-    clock.advance(400)  # the late trade is now older than max_detection_delay (300s)
-    res = await rt.monitor.poll_once(await rt.registry.get(w.id))
-    assert res.new_events == 1
+    await add_and_snapshot(rt, WALLET_A, world=world)
+    clock.advance(120)
+    world.head += 1
+    block = world.head
+    world.block_ts[block] = int((clock.now() - timedelta(seconds=3)).timestamp())
+    row = fill_log(WALLET_A, block=block, tx="0x01")
+    pushed = {"jsonrpc": "2.0", "method": "eth_subscription", "params": {"result": row}}
+    await rt.feed.tick()  # learn followed wallets and initialize the cursor
+    assert await rt.feed.handle_message(pushed) == 1
+    assert await rt.feed.handle_message(pushed) == 0
+    clock.advance(400)
+    assert (
+        await chain_trade(
+            rt,
+            world,
+            clock,
+            WALLET_A,
+            ago_s=460,
+            size="50",
+            tx="0x00",
+        )
+        == 1
+    )
     sigs = await signals(rt)
-    assert len(sigs) == 3
+    assert len(sigs) == 2
     assert sigs[-1].status == SignalStatus.REJECTED
     assert sigs[-1].reasons["items"][-1]["code"] == "STALE_SIGNAL"
     async with rt.sm() as s:
-        assert await s.scalar(select(func.count()).select_from(SourceEvent)) == 3
-
-
-async def test_non_trade_activity_is_recorded_not_copied(env, world):
-    rt, clock, _ = env
-    w = await add_and_snapshot(rt, WALLET_A, world=world)
-    clock.advance(10)
-    ts = clock.now() - timedelta(seconds=2)
-    world.activity[WALLET_A] = [
-        activity(WALLET_A, ts=ts, typ="REDEEM", side=None, tx="0x10"),
-        activity(WALLET_A, ts=ts, typ="SPLIT", side=None, tx="0x11"),
-        activity(WALLET_A, ts=ts, typ="MERGE", side=None, tx="0x12"),
-    ]
-    res = await rt.monitor.poll_once(w)
-    assert res.new_events == 3 and res.new_trades == 0
-    assert await signals(rt) == []
+        assert await s.scalar(select(func.count()).select_from(SourceEvent)) == 2
 
 
 async def test_backfill_is_history_only(env, world):
     rt, _clock, _ = env
-    world.activity[WALLET_A] = [activity(WALLET_A, ts=NOW - timedelta(days=1), tx="0xold")]
+    old = activity(WALLET_A, ts=NOW - timedelta(days=1), tx="0xold")
+    future = activity(WALLET_A, ts=NOW + timedelta(seconds=1), tx="0xfuture")
+    world.activity[WALLET_A] = [old, future]
     w = await add_and_snapshot(rt, WALLET_A, world=world)
-    res = await rt.monitor.poll_once(w)
-    assert res.new_trades == 1  # recorded for history/metrics...
-    assert await signals(rt) == []  # ...but never turned into a copy decision
+    assert await rt.observer.import_history(w) == 1
+    assert await signals(rt) == []
     async with rt.sm() as s:
-        assert (await s.scalar(select(SourceEvent.is_backfill))) is True
+        rows = list((await s.scalars(select(SourceEvent))).all())
+    assert len(rows) == 1 and rows[0].is_backfill is True and rows[0].tx_hash == "0xold"
 
 
 async def test_restart_recovers_missed_trades_once(world, sm):
@@ -161,21 +172,24 @@ async def test_restart_recovers_missed_trades_once(world, sm):
         world.install(router)
         rt = await make_runtime(TEST_DB, clock, rest, create_async_engine(TEST_DB))
         await rt.settings.update({"paper": {"execution_delay_ms": 0}})
-        w = await add_and_snapshot(rt, WALLET_A, world=world)
-        clock.advance(20)
-        world.activity[WALLET_A] = [activity(WALLET_A, ts=clock.now(), tx="0x1")]
-        await rt.monitor.poll_once(w)
+        await add_and_snapshot(rt, WALLET_A, world=world)
+        clock.advance(5)
+        assert await chain_trade(rt, world, clock, WALLET_A, tx="0x1") == 1
         await rt.stop()
-        # Downtime: two more trades happen.
+        # Downtime: two blocks arrive while no process is reading the persisted cursor.
         clock.advance(60)
-        world.activity[WALLET_A] += [
-            activity(WALLET_A, ts=clock.now() - timedelta(seconds=30), tx="0x2"),
-            activity(WALLET_A, ts=clock.now() - timedelta(seconds=10), tx="0x3"),
-        ]
+        for i, ago in ((2, 30), (3, 10)):
+            world.head += 1
+            world.block_ts[world.head] = int(
+                (clock.now() - timedelta(seconds=ago)).timestamp()
+            )
+            world.fill_logs.append(
+                fill_log(WALLET_A, block=world.head, tx=f"0x{i}", log_index=i)
+            )
         rt2 = await make_runtime(TEST_DB, clock, rest, create_async_engine(TEST_DB))
         await rt2.recover()
-        res = await rt2.monitor.poll_once(await rt2.registry.get(w.id))
-        assert res.new_events == 2
+        assert await rt2.feed.tick() == 2
+        assert await rt2.feed.tick() == 0
         sigs = await signals(rt2)
         assert len(sigs) == 3
         assert all(sg.status == SignalStatus.EXECUTED for sg in sigs)
@@ -185,16 +199,17 @@ async def test_restart_recovers_missed_trades_once(world, sm):
 
 async def test_source_sell_larger_than_copied_inventory(env, world):
     rt, clock, _rest = env
-    w = await add_and_snapshot(rt, WALLET_A, world=world)
-    clock.advance(10)
-    world.activity[WALLET_A] = [activity(WALLET_A, ts=clock.now(), tx="0xb")]
-    await rt.monitor.poll_once(w)  # we hold 25 YES
+    await add_and_snapshot(rt, WALLET_A, world=world)
+    clock.advance(5)
+    assert await chain_trade(rt, world, clock, WALLET_A, tx="0xb") == 1
     clock.advance(10)
     world.positions[WALLET_A] = []  # source fully exited
-    world.activity[WALLET_A].append(
-        activity(WALLET_A, ts=clock.now(), side="SELL", size="5000", tx="0xs")
+    assert (
+        await chain_trade(
+            rt, world, clock, WALLET_A, side="SELL", size="5000", tx="0xs"
+        )
+        == 1
     )
-    await rt.monitor.poll_once(await rt.registry.get(w.id))
     sell = (await signals(rt))[-1]
     assert sell.side == "SELL" and sell.status == SignalStatus.EXECUTED, sell.reasons
     assert sell.filled_shares == D("25")
@@ -208,8 +223,7 @@ async def test_unknown_source_bankroll_skips(env, world):
     w = await rt.registry.add(WALLET_A)
     await rt.estimator.snapshot(w)
     clock.advance(5)
-    world.activity[WALLET_A] = [activity(WALLET_A, ts=clock.now(), tx="0xu")]
-    await rt.monitor.poll_once(await rt.registry.get(w.id))
+    assert await chain_trade(rt, world, clock, WALLET_A, tx="0xu") == 1
     [sig] = await signals(rt)
     assert sig.status == SignalStatus.SKIPPED
     assert sig.reasons["items"][-1]["code"] == "SOURCE_EQUITY_UNKNOWN"
@@ -230,15 +244,23 @@ async def test_simultaneous_trades_never_overspend(env, world):
             },
         }
     )
-    wa = await add_and_snapshot(rt, WALLET_A, world=world)
-    wb = await add_and_snapshot(rt, WALLET_B, world=world)
+    await add_and_snapshot(rt, WALLET_A, world=world)
+    await add_and_snapshot(rt, WALLET_B, world=world)
     clock.advance(5)
-    for addr in (WALLET_A, WALLET_B):
-        world.activity[addr] = [
-            activity(addr, ts=clock.now(), tx=f"0x{addr[-2:]}{i}", size=str(100 + i))
-            for i in range(4)
-        ]
-    await asyncio.gather(rt.monitor.poll_once(wa), rt.monitor.poll_once(wb))
+    world.head += 1
+    world.block_ts[world.head] = int(clock.now().timestamp())
+    for wallet_index, addr in enumerate((WALLET_A, WALLET_B)):
+        for i in range(4):
+            world.fill_logs.append(
+                fill_log(
+                    addr,
+                    block=world.head,
+                    tx=f"0x{wallet_index}{i}",
+                    log_index=wallet_index * 4 + i,
+                    size=str(100 + i),
+                )
+            )
+    assert await rt.feed.tick() == 8
     sigs = await signals(rt)
     executed = [sg for sg in sigs if sg.status == SignalStatus.EXECUTED]
     rejected = [sg for sg in sigs if sg.status == SignalStatus.REJECTED]
@@ -250,27 +272,23 @@ async def test_simultaneous_trades_never_overspend(env, world):
     assert await rt.ledger.verify(rt.account_id) == []
 
 
-async def test_upstream_outages_are_retried_and_recorded(env, world):
-    rt, clock, _ = env
-    w = await add_and_snapshot(rt, WALLET_A, world=world)
-    clock.advance(5)
-    world.activity[WALLET_A] = [activity(WALLET_A, ts=clock.now(), tx="0xr")]
-    world.activity_errors = 2  # two 503s, then success (within retry budget)
-    res = await rt.monitor.poll_once(w)
-    assert res.new_trades == 1
-    world.activity_errors = 10  # exceeds retries -> poll fails, nothing lost
-    clock.advance(5)
-    world.activity[WALLET_A].append(activity(WALLET_A, ts=clock.now(), tx="0xr2"))
+async def test_rpc_outage_does_not_lose_or_duplicate_trade(env, world):
     from app.integrations.http import UpstreamError
 
+    rt, clock, _ = env
+    await add_and_snapshot(rt, WALLET_A, world=world)
+    clock.advance(5)
+    world.head += 1
+    world.block_ts[world.head] = int(clock.now().timestamp())
+    world.fill_logs.append(fill_log(WALLET_A, block=world.head, tx="0xr"))
+    world.rpc_errors = 10
     with pytest.raises(UpstreamError):
-        await rt.monitor.poll_once(await rt.registry.get(w.id))
-    await rt.monitor._record_failure(await rt.registry.get(w.id), RuntimeError("503"))
-    assert (await rt.registry.get(w.id)).last_error == "503"
-    world.activity_errors = 0
-    res = await rt.monitor.poll_once(await rt.registry.get(w.id))
-    assert res.new_trades == 1
-    assert (await rt.registry.get(w.id)).last_error is None
+        await rt.feed.tick()
+    assert await signals(rt) == []
+    world.rpc_errors = 0
+    assert await rt.feed.tick() == 1
+    assert await rt.feed.tick() == 0
+    assert len(await signals(rt)) == 1
 
 
 async def test_paused_and_unfollowed_are_respected(env, world):
@@ -278,12 +296,12 @@ async def test_paused_and_unfollowed_are_respected(env, world):
     w = await add_and_snapshot(rt, WALLET_A, world=world)
     await rt.settings.update({"strategies_paused": True})
     clock.advance(5)
-    world.activity[WALLET_A] = [activity(WALLET_A, ts=clock.now(), tx="0xp")]
-    await rt.monitor.poll_once(w)
+    assert await chain_trade(rt, world, clock, WALLET_A, tx="0xp") == 1
     assert (await signals(rt))[-1].reasons["items"][-1]["code"] == "TRADING_HALTED"
     await rt.settings.update({"strategies_paused": False})
     await rt.registry.update(w.id, {"follow": False})
     clock.advance(5)
-    world.activity[WALLET_A].append(activity(WALLET_A, ts=clock.now(), tx="0xq"))
-    await rt.monitor.poll_once(await rt.registry.get(w.id))
+    before = len(await signals(rt))
+    assert await chain_trade(rt, world, clock, WALLET_A, tx="0xq") == 1
+    assert len(await signals(rt)) == before + 1
     assert (await signals(rt))[-1].reasons["items"][-1]["code"] == "NOT_FOLLOWED"

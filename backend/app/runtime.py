@@ -1,4 +1,10 @@
-"""Composition root: builds every service once and owns the worker lifecycle."""
+"""Composition root: builds the trading pipeline once and owns the worker lifecycle.
+
+    ChainFeed (Polygon fills) -> CopyEngine (strategy -> risk -> execution) -> ledger
+
+Supporting workers: WalletObserver (source equity), MarketStream + prewarm (books),
+HedgeScanner, settlement, reconciliation, snapshots.
+"""
 
 from __future__ import annotations
 
@@ -17,6 +23,16 @@ from app.core.clock import Clock, SystemClock
 from app.core.money import ZERO
 from app.db.models import AccountMode, SourceEvent, WalletPosition, WatchedWallet
 from app.db.session import make_engine, make_sessionmaker
+from app.engine.context import ContextLoader
+from app.engine.copy_engine import CopyEngine
+from app.engine.journal import SignalJournal
+from app.engine.portfolio import PortfolioReader
+from app.execution.live import LiveExecutor, sdk_client_factory
+from app.execution.orders import Executor
+from app.execution.paper import PaperExecutor
+from app.feeds.chain import ChainFeed
+from app.feeds.observer import WalletObserver
+from app.feeds.tape import TradeTape
 from app.integrations.http import ResilientHttp
 from app.integrations.polygon import CollateralReader, PolygonRpc
 from app.integrations.polymarket.clob import ClobRestBooks, MarketStream
@@ -30,20 +46,15 @@ from app.integrations.polymarket.live import (
 )
 from app.integrations.polymarket.markets import MarketMetadataClient
 from app.services.book_recorder import BookRecorder
-from app.services.chain_watcher import ChainFillWatcher
-from app.services.copy_signal import CopySignalService
 from app.services.equity_estimator import WalletEquityEstimator
 from app.services.event_bus import EventBus
-from app.services.event_store import TradeEventStore
 from app.services.hedge_scanner import HedgeScannerService
 from app.services.ledger import PortfolioLedger
-from app.services.live_execution import LiveExecutionEngine, sdk_client_factory
 from app.services.market_data import MarketDataService
-from app.services.paper_execution import PaperExecutionEngine
 from app.services.replay import ReplayService
 from app.services.settings_service import SettingsService
 from app.services.system_events import SystemEventLog
-from app.services.wallets import WalletMonitorService, WalletRegistry
+from app.services.wallets import WalletRegistry
 from app.services.workers import Supervisor, periodic
 
 log = logging.getLogger(__name__)
@@ -70,12 +81,14 @@ class Runtime:
     market_data: MarketDataService
     stream: MarketStream | None
     ledger: PortfolioLedger
-    executor: PaperExecutionEngine
+    executor: Executor
     settings: SettingsService
     estimator: WalletEquityEstimator
     registry: WalletRegistry
-    copy: CopySignalService
-    monitor: WalletMonitorService
+    portfolio: PortfolioReader
+    copy_engine: CopyEngine
+    feed: ChainFeed
+    observer: WalletObserver
     geoblock: GeoblockChecker
     hedger: HedgeScannerService
     gate: LiveGate
@@ -83,13 +96,12 @@ class Runtime:
     replay: ReplayService
     supervisor: Supervisor
     sdk: Any = None
-    chain: ChainFillWatcher | None = None
     data_api_lag_s: int | None = None
     live_block_reason: str | None = None
 
     @property
     def account_id(self) -> int:
-        return self.copy.account_id
+        return self.copy_engine.account_id
 
     @classmethod
     async def create(
@@ -100,7 +112,7 @@ class Runtime:
         engine: AsyncEngine | None = None,
         http: ResilientHttp | None = None,
         rest_books: Any = None,
-        meta: Any = None,
+        meta: MarketMetadataClient | None = None,
         stream: MarketStream | None = None,
         enable_stream: bool = True,
     ) -> Runtime:
@@ -126,9 +138,9 @@ class Runtime:
         gate = LiveGate(cfg, geoblock)
         settings = SettingsService(sm)
         strategy = await settings.get()
-        executor: PaperExecutionEngine
+        executor: Executor
         if cfg.execution_mode is ExecutionMode.LIVE:
-            executor = LiveExecutionEngine(
+            executor = LiveExecutor(
                 sm,
                 ledger,
                 market_data,
@@ -139,7 +151,7 @@ class Runtime:
             # Live cash is synced from the exchange balance before workers start.
             account_id = await ledger.ensure_account(AccountMode.LIVE, ZERO)
         else:
-            executor = PaperExecutionEngine(sm, ledger, market_data, clock)
+            executor = PaperExecutor(sm, ledger, market_data, clock)
             account_id = await ledger.ensure_account(
                 AccountMode.PAPER, strategy.paper.starting_bankroll_usd
             )
@@ -147,42 +159,45 @@ class Runtime:
             sm, data_api, CollateralReader(http, cfg.polygon_rpc_url), clock
         )
         registry = WalletRegistry(sm, clock, bus)
-        copy = CopySignalService(
-            sm, ledger, executor, market_data, estimator, settings, bus, clock, account_id
-        )
-        store = TradeEventStore(sm)
-        monitor = WalletMonitorService(
+        tape = TradeTape(sm)
+        portfolio = PortfolioReader(ledger, market_data, clock, account_id)
+        copy_engine = CopyEngine(
             sm,
-            data_api,
-            store,
-            copy,
-            estimator,
+            SignalJournal(sm, bus, clock),
+            ContextLoader(sm, market_data, estimator, portfolio),
+            ledger,
+            executor,
+            settings,
+            bus,
+            clock,
+            account_id,
+        )
+        feed = ChainFeed(
+            sm,
+            PolygonRpc(http, cfg.polygon_rpc_url),
+            meta,
             registry,
+            tape,
+            copy_engine,
             events,
             bus,
             clock,
-            poll_interval_s=cfg.wallet_poll_interval_s,
-            equity_interval_s=cfg.equity_snapshot_interval_s,
-            overlap_s=cfg.ingest_overlap_s,
-            backfill=timedelta(hours=cfg.backfill_hours),
+            ws_url=cfg.chain_ws_url,
+            poll_interval_s=cfg.chain_poll_interval_s,
+            backstop_interval_s=cfg.chain_backstop_interval_s,
+            lookback_blocks=cfg.chain_lookback_blocks,
         )
-        chain = None
-        if cfg.chain_watch_enabled and cfg.polygon_rpc_url and isinstance(
-            meta, MarketMetadataClient
-        ):
-            chain = ChainFillWatcher(
-                PolygonRpc(http, cfg.polygon_rpc_url),
-                meta,
-                registry,
-                store,
-                copy,
-                bus,
-                clock,
-                poll_interval_s=cfg.chain_poll_interval_s,
-                backstop_interval_s=cfg.chain_backstop_interval_s,
-                lookback_blocks=cfg.chain_lookback_blocks,
-                ws_url=cfg.chain_ws_url,
-            )
+        observer = WalletObserver(
+            sm,
+            estimator,
+            data_api,
+            tape,
+            registry,
+            bus,
+            clock,
+            interval_s=cfg.equity_snapshot_interval_s,
+            history=timedelta(hours=cfg.backfill_hours),
+        )
         rt = cls(
             cfg=cfg,
             clock=clock,
@@ -199,8 +214,10 @@ class Runtime:
             settings=settings,
             estimator=estimator,
             registry=registry,
-            copy=copy,
-            monitor=monitor,
+            portfolio=portfolio,
+            copy_engine=copy_engine,
+            feed=feed,
+            observer=observer,
             geoblock=geoblock,
             gate=gate,
             hedger=HedgeScannerService(
@@ -210,7 +227,6 @@ class Runtime:
             replay=ReplayService(engine, sm, market_data, clock),
             supervisor=Supervisor(engine, clock),
             sdk=sdk,
-            chain=chain,
         )
         rt._register_workers()
         return rt
@@ -218,12 +234,12 @@ class Runtime:
     def _register_workers(self) -> None:
         sup = self.supervisor
         sup.on_leader = self.recover
-        sup.add("wallet_monitor", self.monitor.supervise)
+        sup.add("chain_feed", self.feed.run)
+        self.feed.on_tick = lambda: sup.heartbeat("chain_feed")
+        sup.add("wallet_observer", self.observer.run)
+        self.observer.on_tick = lambda: sup.heartbeat("wallet_observer")
         if self.stream is not None:
             sup.add("market_stream", self.stream.run)
-        if self.chain is not None:
-            self.chain.on_tick = lambda: sup.heartbeat("chain_watcher")
-            sup.add("chain_watcher", self.chain.run)
         sup.add(
             "prewarm",
             lambda stop: periodic(
@@ -316,7 +332,7 @@ class Runtime:
                 f"Failed {hedges} hedges left pending by a crash",
                 level="WARNING",
             )
-        resumed = await self.copy.resume_unfinished()
+        resumed = await self.copy_engine.resume_unfinished()
         if resumed:
             await self.events.record("RESUMED_SIGNALS", f"Resumed {resumed} unfinished signals")
         await self.reconcile()
@@ -329,7 +345,7 @@ class Runtime:
             )
 
     async def snapshot_portfolio(self) -> None:
-        view = await self.copy.portfolio()
+        view = await self.portfolio.view()
         await self.ledger.record_snapshot(view)
         self.bus.publish("portfolio", {})
 
@@ -357,7 +373,7 @@ class Runtime:
         await self.supervisor.start()
 
     async def _sync_live_balance(self) -> None:
-        assert isinstance(self.executor, LiveExecutionEngine)
+        assert isinstance(self.executor, LiveExecutor)
         client = await _live_client(self.cfg)
         info = await client.get_balance_allowance(asset_type="COLLATERAL")  # type: ignore[attr-defined]
         balance = Decimal(int(info.balance)) / Decimal(10**6)

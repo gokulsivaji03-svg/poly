@@ -2,7 +2,6 @@
 
 import asyncio
 import contextlib
-import itertools
 from datetime import timedelta
 from decimal import Decimal
 
@@ -24,7 +23,18 @@ from app.db.models import (
     SystemEvent,
 )
 from app.domain.hedge_state import HedgeState
-from scenario import COND, NO, WALLET_A, WALLET_B, YES, FakeRest, World, activity, make_runtime
+from scenario import (
+    COND,
+    NO,
+    WALLET_A,
+    WALLET_B,
+    YES,
+    FakeRest,
+    World,
+    chain_trade,
+    fill_log,
+    make_runtime,
+)
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -35,7 +45,6 @@ D = Decimal
 KEY = f"{COND}:{YES}"
 WALLET_C = "0x" + "c3" * 20
 WALLET_D = "0x" + "d4" * 20
-_tx = itertools.count()
 
 
 class EdgeWorld(World):
@@ -90,12 +99,23 @@ async def follow(rt, world, wallet=WALLET_A):
 
 
 async def trade(rt, clock, world, w, *, advance=5, **kw):
-    """The source makes one trade; we poll and return the resulting (latest) signal."""
+    """The source makes one on-chain trade; the feed ingests it; return the latest signal."""
     clock.advance(advance)
-    row = activity(w.address, ts=clock.now(), tx=f"0x{next(_tx):04x}", **kw)
-    world.activity.setdefault(w.address, []).append(row)
-    await rt.monitor.poll_once(await rt.registry.get(w.id))
+    assert await chain_trade(rt, world, clock, w.address, **kw) == 1
     return (await signals(rt))[-1]
+
+
+async def push(rt, world, clock, wallet, *, block, ago_s=2, **kw):
+    """Deliver one fill log via the WebSocket ``logs`` subscription (not the backstop tick)."""
+    world.block_ts[block] = int(clock.now().timestamp() - ago_s)
+    log = fill_log(wallet, block=block, **kw)
+    return await rt.feed.handle_message(
+        {"jsonrpc": "2.0", "method": "eth_subscription", "params": {"result": log}}
+    )
+
+
+def pushed(result):
+    return {"jsonrpc": "2.0", "method": "eth_subscription", "params": {"result": result}}
 
 
 async def signals(rt):
@@ -157,7 +177,7 @@ async def test_fifty_fifty_resolution_on_fully_hedged_pair(env, world):
     assert (closures[YES].proceeds, closures[YES].realized_pnl) == (D("50"), D("10"))
     assert (closures[NO].proceeds, closures[NO].realized_pnl) == (D("50"), D("-5"))
     assert await rt.ledger.open_lots(rt.account_id) == []
-    view = await rt.copy.portfolio()
+    view = await rt.portfolio.view()
     assert view.equity == view.cash == D("1005")
     assert view.locked_profit == 0 and view.positions == ()
     assert await hedge_state(rt) is HedgeState.SETTLED
@@ -341,10 +361,7 @@ async def test_max_buys_per_market_holds_across_concurrent_wallets(env, world, m
     await rt.settings.update({"risk": {"max_buys_per_market": 1}})
     wa = await follow(rt, world, WALLET_A)
     wb = await follow(rt, world, WALLET_B)
-    # Two followed wallets buy the same market in the same block; the leader polls both
-    # wallets concurrently (one task per wallet). Line both signals up at the reservation.
-    # Barrier: on the racy code both signals reach reserve() together; with the per-market
-    # lock the second never gets there, so give up waiting after a short timeout.
+    await rt.feed.tick()  # populate the followed-wallet subscription set
     arrived = 0
     both = asyncio.Event()
     original = rt.ledger.reserve
@@ -360,12 +377,13 @@ async def test_max_buys_per_market_holds_across_concurrent_wallets(env, world, m
 
     monkeypatch.setattr(rt.ledger, "reserve", reserve)
     clock.advance(5)
-    for i, wl in enumerate((wa, wb)):
-        world.activity[wl.address] = [activity(wl.address, ts=clock.now(), tx=f"0xcc{i}")]
-    await asyncio.gather(
-        rt.monitor.poll_once(await rt.registry.get(wa.id)),
-        rt.monitor.poll_once(await rt.registry.get(wb.id)),
-    )
+    block = world.head + 1
+    world.block_ts[block] = int(clock.now().timestamp())
+    logs = [
+        fill_log(w.address, block=block, tx=f"0xcc{i}", log_index=i)
+        for i, w in enumerate((wa, wb))
+    ]
+    await asyncio.gather(*(rt.feed.handle_message(pushed(log)) for log in logs))
     sigs = await signals(rt)
     assert sorted(s.status for s in sigs) == [SignalStatus.EXECUTED, SignalStatus.REJECTED]
     [rejected] = [s for s in sigs if s.status == SignalStatus.REJECTED]
@@ -400,7 +418,7 @@ async def test_sell_of_token_held_only_as_hedge_lot_is_ignored(env, world):
         (NO, D("100"), D("100")),
     }
     assert await count(rt, Order, Order.kind == "COPY_SELL") == 0
-    assert (await rt.copy.portfolio()).locked_profit == D("5")
+    assert (await rt.portfolio.view()).locked_profit == D("5")
     assert await rt.ledger.verify(rt.account_id) == []
 
 
@@ -422,7 +440,7 @@ async def test_full_exit_of_copied_complement_spares_hedge_lot(env, world):
         (YES, LotOrigin.COPY, D("100"), D("100")),
         (NO, LotOrigin.HEDGE, D("100"), D("100")),
     }
-    assert (await rt.copy.portfolio()).locked_profit == D("5")
+    assert (await rt.portfolio.view()).locked_profit == D("5")
     assert await rt.ledger.verify(rt.account_id) == []
 
 
@@ -441,7 +459,7 @@ async def test_partial_hedge_full_source_exit_sells_only_unmatched(env, world):
     acct = await rt.ledger.get_account(rt.account_id)
     # 60 sold at .39 against .40 cost.
     assert acct.realized_pnl == D("60") * (D("0.39") - D("0.40"))
-    assert (await rt.copy.portfolio()).locked_profit == D("40") - D("16") - D("22")
+    assert (await rt.portfolio.view()).locked_profit == D("40") - D("16") - D("22")
     assert await rt.ledger.verify(rt.account_id) == []
 
 
@@ -499,22 +517,24 @@ async def test_proportional_sells_respect_fraction_then_cap_at_unhedged(env, wor
 
 async def test_buy_indexed_after_its_sell_does_not_leave_orphan_position(env, world):
     rt, clock, _rest = env
-    w = await follow(rt, world)
+    await follow(rt, world)
+    await rt.feed.tick()
     clock.advance(10)
-    t_buy, t_sell = clock.now() - timedelta(seconds=4), clock.now() - timedelta(seconds=2)
+    t_buy = int((clock.now() - timedelta(seconds=4)).timestamp())
+    t_sell = int((clock.now() - timedelta(seconds=2)).timestamp())
     world.positions[WALLET_A] = []
-    world.activity[WALLET_A] = [activity(WALLET_A, ts=t_sell, side="SELL", tx="0x5e11")]
-    await rt.monitor.poll_once(await rt.registry.get(w.id))
+    sell_block = world.head + 1
+    world.block_ts[sell_block] = t_sell
+    sell_log = fill_log(WALLET_A, block=sell_block, side="SELL", tx="0x5e11")
+    assert await rt.feed.handle_message(pushed(sell_log)) == 1
     [sell] = await signals(rt)
     assert "NO_COPIED_INVENTORY" in codes(sell)
-    # The source's earlier BUY is indexed late and shows up in the overlap window.
-    world.activity[WALLET_A].append(activity(WALLET_A, ts=t_buy, tx="0xb0b"))
-    clock.advance(5)
-    await rt.monitor.poll_once(await rt.registry.get(w.id))
+    # The earlier BUY is delivered later, after the source's exit was already consumed.
+    buy_block = sell_block + 1
+    world.block_ts[buy_block] = t_buy
+    buy_log = fill_log(WALLET_A, block=buy_block, tx="0xb0b")
+    assert await rt.feed.handle_message(pushed(buy_log)) == 1
     buy = (await signals(rt))[-1]
-    assert buy.side == "BUY"
-    # Either refuse the stale BUY or flatten it: we must not end up holding what the
-    # source no longer holds (its exit was already consumed as NO_COPIED_INVENTORY).
     assert await rt.ledger.open_lots(rt.account_id) == [], buy.status
     assert buy.status == SignalStatus.SKIPPED and "SOURCE_SOLD_AFTER" in codes(buy)
 
@@ -568,14 +588,26 @@ async def test_concurrent_signals_with_tiny_cash_never_breach_reserve_floor(env,
             },
         }
     )
-    wallets = [await follow(rt, world, a) for a in (WALLET_A, WALLET_B, WALLET_C, WALLET_D)]
+    wallets = [
+        await follow(rt, world, address)
+        for address in (WALLET_A, WALLET_B, WALLET_C, WALLET_D)
+    ]
+    await rt.feed.tick()
     clock.advance(5)
-    for wl in wallets:
-        world.activity[wl.address] = [
-            activity(wl.address, ts=clock.now(), tx=f"0x{wl.address[-2:]}{i}", size=str(100 + i))
-            for i in range(2)
-        ]
-    await asyncio.gather(*[rt.monitor.poll_once(await rt.registry.get(wl.id)) for wl in wallets])
+    block = world.head + 1
+    world.block_ts[block] = int(clock.now().timestamp())
+    logs = [
+        fill_log(
+            wl.address,
+            block=block,
+            tx=f"0x{wallet_index}{i}",
+            log_index=wallet_index * 2 + i,
+            size=str(100 + i),
+        )
+        for wallet_index, wl in enumerate(wallets)
+        for i in range(2)
+    ]
+    await asyncio.gather(*(rt.feed.handle_message(pushed(log)) for log in logs))
     sigs = await signals(rt)
     assert len(sigs) == 8
     spent = sum((s.filled_cost for s in sigs if s.filled_cost is not None), D(0))
@@ -598,13 +630,13 @@ async def test_unmarked_position_then_settlement_gives_exact_equity(env, world):
     # Resolved market: the CLOB book is gone and nothing is cached.
     rest.books.pop(YES)
     rt.market_data._books.pop(YES, None)
-    before = await rt.copy.portfolio()
+    before = await rt.portfolio.view()
     # Current behaviour before settlement runs: unknown mark => carried at cost, flagged.
     assert before.unmarked_positions == 1
     assert before.positions[0].mark is None
     assert before.equity == D("1000")
     await rt.hedger.settle_resolved()
-    after = await rt.copy.portfolio()
+    after = await rt.portfolio.view()
     assert after.positions == () and after.unmarked_positions == 0
     assert after.equity == after.cash == D("960")
     assert after.realized_pnl == D("-40")
@@ -617,7 +649,7 @@ async def test_vanished_book_is_unmarked_not_valued_at_hour_old_mark(env, world)
     await trade(rt, clock, world, w)  # caches YES book (mid .395)
     rest.books.pop(YES)  # e.g. market closed: CLOB no longer serves the book
     clock.advance(3600)
-    view = await rt.copy.portfolio()
+    view = await rt.portfolio.view()
     [pos] = view.positions
     assert pos.mark is None
     assert view.unmarked_positions == 1

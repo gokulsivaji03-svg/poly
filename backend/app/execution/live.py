@@ -1,4 +1,4 @@
-"""LiveExecutionEngine: same order lifecycle and ledger booking as paper, real venue fills."""
+"""LiveExecutor: shared order lifecycle and ledger booking with real venue fills."""
 
 from __future__ import annotations
 
@@ -12,6 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.config import ExecutionMode
 from app.core.clock import Clock
 from app.db.models import Order, OrderStatus
+from app.execution.orders import BookSource, ExecutionRequest, ObtainedFill
+from app.execution.paper import PaperExecutor
 from app.integrations.polymarket.live import (
     LiveGate,
     LiveOrderClient,
@@ -20,19 +22,13 @@ from app.integrations.polymarket.live import (
     place_live_order,
 )
 from app.services.ledger import PortfolioLedger
-from app.services.paper_execution import (
-    BookSource,
-    ExecutionRequest,
-    ObtainedFill,
-    PaperExecutionEngine,
-)
 
 log = logging.getLogger(__name__)
 
 ClientFactory = Callable[[], Awaitable[LiveOrderClient]]
 
 
-class LiveExecutionEngine(PaperExecutionEngine):
+class LiveExecutor(PaperExecutor):
     def __init__(
         self,
         sm: async_sessionmaker[AsyncSession],

@@ -44,13 +44,16 @@ from app.db.models import (
 )
 from app.domain.market import BookLevel, MarketInfo, OrderBook
 from app.domain.settings import StrategySettings
-from app.services.copy_signal import CopySignalService
+from app.engine.context import ContextLoader
+from app.engine.copy_engine import CopyEngine
+from app.engine.journal import SignalJournal
+from app.engine.portfolio import PortfolioReader
+from app.execution.paper import PaperExecutor
 from app.services.equity_estimator import WalletEquityEstimator
 from app.services.event_bus import EventBus
 from app.services.hedge_scanner import HedgeScannerService
 from app.services.ledger import PortfolioLedger
 from app.services.market_data import MarketDataService
-from app.services.paper_execution import PaperExecutionEngine
 from app.services.settings_service import SettingsService, deep_merge
 from app.services.system_events import SystemEventLog
 
@@ -322,13 +325,22 @@ class ReplayService:
         hist = HistoricalBooks(rsm, clock)
         md = MarketDataService(PointInTimeMetadata(rsm, clock), hist, clock, None)
         ledger = PortfolioLedger(rsm, clock)
-        executor = PaperExecutionEngine(rsm, ledger, md, clock, mode=ExecutionMode.REPLAY)
+        executor = PaperExecutor(rsm, ledger, md, clock, mode=ExecutionMode.REPLAY)
         settings = SettingsService(rsm)
         strategy = await settings.get()
         account_id = await ledger.ensure_account(AccountMode.REPLAY, p.starting_bankroll)
         estimator = ReplayEstimator(rsm, None, None, clock)  # type: ignore[arg-type]
-        copy = CopySignalService(
-            rsm, ledger, executor, md, estimator, settings, bus, clock, account_id
+        portfolio = PortfolioReader(ledger, md, clock, account_id)
+        copy_engine = CopyEngine(
+            rsm,
+            SignalJournal(rsm, bus, clock),
+            ContextLoader(rsm, md, estimator, portfolio),
+            ledger,
+            executor,
+            settings,
+            bus,
+            clock,
+            account_id,
         )
         hedger = HedgeScannerService(
             rsm,
@@ -368,15 +380,15 @@ class ReplayService:
                 row = await s.get(SourceEvent, ev.id)
                 assert row is not None
                 row.detected_at = ev.detected_at
-            await copy.process(ev, wallet)
+            await copy_engine.on_trade(ev, wallet)
             if strategy.hedge.enabled:
                 await hedger.scan()
-            view = await copy.portfolio()
+            view = await portfolio.view()
             await ledger.record_snapshot(view)
             curve.append({"t": clock.now().isoformat(), "equity": str(view.equity)})
         if p.end > clock.now():
             clock.set(p.end)
-        final = await copy.portfolio()
+        final = await portfolio.view()
         curve.append({"t": p.end.isoformat(), "equity": str(final.equity)})
         problems = await ledger.verify(account_id)
         async with rsm() as s:

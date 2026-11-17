@@ -17,13 +17,13 @@ from app.db.models import (
     WalletEquitySnapshot,
 )
 from app.domain.market import Side
+from app.execution.live import LiveExecutor
+from app.execution.orders import ExecutionRequest
 from app.integrations.http import ResilientHttp
 from app.integrations.polymarket.geoblock import GeoblockChecker
 from app.integrations.polymarket.live import LiveGate, LiveTradingUnavailable
 from app.runtime import Runtime
 from app.services.ledger import PortfolioLedger
-from app.services.live_execution import LiveExecutionEngine
-from app.services.paper_execution import ExecutionRequest
 from app.services.replay import ReplayParams
 from scenario import COND, NO, WALLET_A, YES, FakeRest, World, make_runtime, scenario_settings
 from sqlalchemy import text
@@ -193,7 +193,7 @@ async def _live_engine(sm, clock, *, geo_blocked: bool, enabled: bool = True):
     async def factory():
         return client
 
-    engine = LiveExecutionEngine(
+    engine = LiveExecutor(
         sm, ledger, FakeBooks(clock), clock, gate=LiveGate(cfg, geo), client_factory=factory
     )
     return engine, client, ledger, acct, http
@@ -289,10 +289,10 @@ async def test_live_runtime_refuses_to_start_workers_when_geoblocked(sm):
 
 
 async def test_paper_engine_cannot_be_constructed_live(sm, clock):
-    from app.services.paper_execution import PaperExecutionEngine
+    from app.execution.paper import PaperExecutor
 
     with pytest.raises(ValueError):
-        PaperExecutionEngine(
+        PaperExecutor(
             sm, PortfolioLedger(sm, clock), FakeBooks(clock), clock, mode=ExecutionMode.LIVE
         )
 

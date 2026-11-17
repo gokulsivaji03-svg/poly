@@ -1,7 +1,7 @@
 import pytest
 from app.domain.hedge_state import HedgeEvent, HedgeState, InvalidHedgeTransition, transition
-from app.domain.sell_policy import plan_copy_sell
 from app.domain.settings import HedgedSellPolicy, SellCopyPolicy, StrategySettings
+from app.strategy.sell_policy import plan_copy_sell
 
 from factories import D
 

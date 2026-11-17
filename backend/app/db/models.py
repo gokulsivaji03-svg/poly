@@ -292,13 +292,22 @@ class WatchedWallet(Base):
     followed_since: Mapped[datetime]
     """Trades with block time before this are history only and are never copied."""
     removed_at: Mapped[datetime | None]
-    hwm_ts: Mapped[datetime | None]
-    """High-water mark: latest block time fully ingested (polls re-read an overlap before it)."""
     last_polled_at: Mapped[datetime | None]
+    """Last public observation attempt (equity snapshot)."""
     last_success_at: Mapped[datetime | None]
     last_trade_at: Mapped[datetime | None]
     last_error: Mapped[str | None] = mapped_column(Text)
     consecutive_failures: Mapped[int] = mapped_column(default=0)
+
+
+class FeedCursor(Base):
+    """Persisted position of a block-ordered feed, so a restart resumes without gaps."""
+
+    __tablename__ = "feed_cursors"
+
+    name: Mapped[str] = mapped_column(String(32), primary_key=True)
+    next_block: Mapped[int] = mapped_column(BigInteger)
+    updated_at: Mapped[datetime]
 
 
 class SourceEvent(Base):
@@ -327,7 +336,7 @@ class SourceEvent(Base):
     is_combo: Mapped[bool] = mapped_column(default=False)
     is_backfill: Mapped[bool] = mapped_column(default=False)
     source: Mapped[str] = mapped_column(String(8), default="api", server_default="api")
-    """Where the row was first seen: ``api`` (Data API poll) or ``chain`` (exchange logs)."""
+    """Where the row was first seen: ``chain`` (exchange logs) or ``api`` (history import)."""
 
 
 class WalletEquitySnapshot(Base):

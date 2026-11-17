@@ -7,8 +7,9 @@ from decimal import Decimal
 from app.core.clock import ManualClock
 from app.db.models import AccountMode, LotOrigin, OrderKind, OrderStatus
 from app.domain.market import Side
+from app.execution.orders import ExecutionRequest
+from app.execution.paper import PaperExecutor
 from app.services.ledger import PortfolioLedger
-from app.services.paper_execution import ExecutionRequest, PaperExecutionEngine
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -45,7 +46,7 @@ async def run_sequence(ops) -> None:
     clock = ManualClock(NOW)
     books = FakeBooks(clock)
     ledger = PortfolioLedger(sm, clock)
-    px = PaperExecutionEngine(sm, ledger, books, clock)
+    px = PaperExecutor(sm, ledger, books, clock)
     start = D("1000")
     acct = await ledger.ensure_account(AccountMode.PAPER, start)
     try:

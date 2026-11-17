@@ -31,31 +31,28 @@ class Settings(BaseSettings):
     clob_api_url: str = "https://clob.polymarket.com"
     clob_ws_url: str = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
     geoblock_url: str = "https://polymarket.com/api/geoblock"
-    polygon_rpc_url: str | None = None
-    """Optional JSON-RPC endpoint for observing source wallets' on-chain collateral."""
-    chain_watch_enabled: bool = True
-    """Detect followed wallets' fills from Polygon exchange logs (needs polygon_rpc_url)."""
+    polygon_rpc_url: str = "https://polygon-bor-rpc.publicnode.com"
+    """Polygon JSON-RPC: the trade feed (exchange fill logs) and source collateral reads."""
+    polygon_ws_url: str | None = None
+    """WebSocket endpoint for pushed fill logs; defaults to polygon_rpc_url as wss://."""
     chain_poll_interval_s: float = Field(default=0.5, gt=0)
-    """Log polling interval while the WebSocket stream is down."""
+    """Backstop log polling interval while the WebSocket stream is down."""
     chain_backstop_interval_s: float = Field(default=2.0, gt=0)
     """Backstop log polling interval while the WebSocket stream is up."""
     chain_lookback_blocks: int = Field(default=30, ge=0)
-    polygon_ws_url: str | None = None
-    """WebSocket endpoint for pushed fill logs; defaults to polygon_rpc_url as wss://."""
+    """Blocks re-read on the very first start (no persisted cursor yet)."""
 
     @property
     def chain_ws_url(self) -> str | None:
         if self.polygon_ws_url:
             return self.polygon_ws_url
-        if self.polygon_rpc_url and self.polygon_rpc_url.startswith("https://"):
+        if self.polygon_rpc_url.startswith("https://"):
             return "wss://" + self.polygon_rpc_url.removeprefix("https://")
         return None
 
-    wallet_poll_interval_s: float = Field(default=4.0, gt=0)
     equity_snapshot_interval_s: float = Field(default=60.0, gt=0)
+    """How often each watched wallet's public equity is re-observed."""
     portfolio_snapshot_interval_s: float = Field(default=30.0, gt=0)
-    ingest_overlap_s: int = Field(default=180, ge=0)
-    """Re-read window behind the high-water mark to catch late-indexed events."""
     backfill_hours: int = Field(default=48, ge=0, le=24 * 90)
     """History loaded when a wallet is first added (metrics only; never copied)."""
     http_timeout_s: float = 10.0

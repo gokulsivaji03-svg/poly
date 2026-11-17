@@ -1,7 +1,9 @@
-"""RiskEngine: caps or rejects a proposed copy budget before any cash is reserved.
+"""Pre-trade risk: the last gate before cash is reserved and an order reaches a venue.
 
-Every reduction or rejection is returned as a coded, human-readable reason so the UI can
-show exactly why a copy was smaller than the source allocation implied.
+Pure functions over immutable inputs. ``check_buy`` caps or rejects a proposed budget and
+sets the limit price; ``check_sell`` sets the sell limit; ``halt_reason`` is the kill switch
+shared by every order producer (copy engine, hedge scanner). Every reduction or rejection
+carries a coded reason so the UI can show exactly why an order was smaller or refused.
 """
 
 from __future__ import annotations
@@ -12,7 +14,8 @@ from decimal import Decimal
 
 from app.core.money import ONE, ZERO, usdc_down
 from app.domain.market import OrderBook
-from app.domain.settings import RiskSettings
+from app.domain.reasons import Reason
+from app.domain.settings import RiskSettings, StrategySettings
 
 MAX_PRICE = Decimal("0.999")
 
@@ -34,10 +37,27 @@ class PortfolioSnapshot:
         return self.cash - self.reserved
 
 
+def halt_reason(settings: StrategySettings) -> Reason | None:
+    """Kill switch: paused or emergency-stopped strategies place no orders of any kind."""
+    if settings.trading_halted:
+        return Reason("TRADING_HALTED", "Strategies are paused or emergency-stopped.")
+    return None
+
+
 @dataclass(frozen=True, slots=True)
-class Reason:
-    code: str
-    message: str
+class SellDecision:
+    limit_price: Decimal | None
+    rejection: Reason | None = None
+
+
+def check_sell(book: OrderBook | None, settings: StrategySettings) -> SellDecision:
+    """Sell limit: never below best bid minus the allowed slippage; no limit without a bid."""
+    halted = halt_reason(settings)
+    if halted is not None:
+        return SellDecision(None, halted)
+    if book is None or book.best_bid is None:
+        return SellDecision(None)
+    return SellDecision(book.best_bid * (ONE - settings.risk.max_slippage_pct))
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,7 +76,7 @@ def _reject(reasons: list[Reason], code: str, msg: str) -> RiskDecision:
     return RiskDecision(ZERO, None, True, (*reasons, Reason(code, msg)))
 
 
-def evaluate_buy(
+def check_buy(
     *,
     budget: Decimal,
     token_id: str,

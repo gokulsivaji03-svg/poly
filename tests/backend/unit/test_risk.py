@@ -1,7 +1,7 @@
 from datetime import timedelta
 
-from app.domain.risk import PortfolioSnapshot, evaluate_buy
 from app.domain.settings import RiskSettings
+from app.risk.pretrade import PortfolioSnapshot, check_buy
 
 from factories import COND, NOW, YES, D, book
 
@@ -31,7 +31,7 @@ def run(
     buys_in_market=0,
     **risk,
 ):
-    return evaluate_buy(
+    return check_buy(
         budget=D(budget),
         token_id=YES,
         condition_id=COND,

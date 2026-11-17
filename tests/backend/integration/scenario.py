@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -146,6 +146,8 @@ class World:
         self.block_ts: dict[int, int] = {}
         self.fill_logs: list[dict[str, Any]] = []
         self.rpc_calls: Counter[str] = Counter()
+        self.rpc_errors = 0
+        """Next N eth_getLogs calls fail with HTTP 503 (RPC outage)."""
 
     def install(self, router: respx.MockRouter) -> None:
         router.get(f"{DATA}/v2/activity").mock(side_effect=self._activity)
@@ -258,6 +260,9 @@ class World:
         body = json.loads(request.content)
         method, params = body["method"], body["params"]
         self.rpc_calls[method] += 1
+        if method == "eth_getLogs" and self.rpc_errors:
+            self.rpc_errors -= 1
+            return httpx.Response(503, json={"error": "busy"})
 
         def ok(result: Any) -> httpx.Response:
             return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": result})
@@ -291,9 +296,7 @@ def scenario_settings(db_url: str) -> Settings:
         gamma_api_url=GAMMA,
         polygon_rpc_url=RPC,
         geoblock_url="https://geo.test/api/geoblock",
-        wallet_poll_interval_s=1,
         equity_snapshot_interval_s=60,
-        ingest_overlap_s=120,
         _env_file=None,  # type: ignore[call-arg]
     )
 
@@ -308,3 +311,24 @@ async def make_runtime(db_url: str, clock: ManualClock, rest: FakeRest, engine: 
         rest_books=rest,
         enable_stream=False,
     )
+
+
+async def chain_trade(
+    rt: Runtime,
+    world: World,
+    clock: ManualClock,
+    wallet: str,
+    *,
+    ago_s: float = 2,
+    **fill: Any,
+) -> int:
+    """The source trades on-chain ``ago_s`` seconds ago; run one feed pass.
+
+    ``fill`` takes ``fill_log`` keywords (side, size, price, token, tx, log_index). Each call
+    mines a new block. Returns the number of new trades the feed ingested.
+    """
+    world.head += 1
+    world.block_ts[world.head] = int((clock.now() - timedelta(seconds=ago_s)).timestamp())
+    fill.setdefault("tx", f"0x{world.head:x}{len(world.fill_logs):04x}")
+    world.fill_logs.append(fill_log(wallet, block=world.head, **fill))
+    return await rt.feed.tick()

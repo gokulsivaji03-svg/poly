@@ -7,37 +7,39 @@ every concurrency hazard here is solved by row-level atomic updates and one lead
 ```mermaid
 flowchart LR
   subgraph External
-    DAPI[Data API v2<br/>activity · positions · value]
+    DAPI[Data API v2<br/>history · positions · value]
     GAMMA[Gamma<br/>market metadata · fees]
     CLOB[CLOB REST + WS<br/>order books]
     GEO[Geoblock]
-    RPC[Polygon RPC<br/>exchange fill logs · collateral]
+    RPC[Polygon RPC + WS<br/>exchange fill logs · collateral]
   end
-  subgraph Workers[Leader-only workers]
-    WM[WalletMonitorService]
-    CW[ChainFillWatcher]
-    EE[WalletEquityEstimator]
-    CS[CopySignalService]
-    HS[HedgeScannerService]
-    RC[ReconciliationService]
+  subgraph Feeds[Leader-only feeds]
+    CF[ChainFeed<br/>push + block backstop]
+    WO[WalletObserver<br/>equity + history import]
+    TP[(TradeTape)]
   end
-  subgraph Core[Pure domain]
-    SZ[PositionSizingEngine]
-    RK[RiskEngine]
-    FL[Order-book walk]
-    HQ[Hedge quote]
+  subgraph Pipeline[Copy pipeline]
+    CX[ContextLoader]
+    ST[Strategy]
+    RK[Pretrade risk]
+    CE[CopyEngine]
+    EX[Executor]
   end
-  DAPI --> WM --> TES[(TradeEventStore)]
-  RPC --> CW --> TES
-  DAPI --> EE
+  subgraph Supporting[Supporting workers]
+    PW[Market prewarm]
+    HS[HedgeScanner]
+    RC[Reconciliation]
+  end
+  RPC --> CF --> TP --> CE
+  DAPI --> WO --> TP
+  DAPI --> WO
   GAMMA --> MDS[MarketDataService]
   CLOB --> MDS
-  TES --> CS
-  CS --> SZ & RK
-  CS --> PEX[PaperExecutionEngine] --> FL
-  HS --> HQ --> FL
-  HS --> PEX
-  PEX --> LED[(PortfolioLedger)]
+  CE --> CX --> ST --> RK --> EX
+  MDS --> CX
+  PW --> MDS
+  HS --> EX
+  EX --> LED[(PortfolioLedger)]
   LED --> API[FastAPI REST + WS]
   API --> UI[React terminal]
 ```
@@ -46,32 +48,40 @@ flowchart LR
 
 | Layer | Path | Rule |
 |---|---|---|
-| Domain | `backend/app/domain` | Pure functions over frozen Pydantic/dataclass models. No I/O, no clock reads. Deterministic for identical inputs. |
+| Domain | `backend/app/domain` | Shared immutable models and pure accounting/market math. No I/O. |
+| Strategy | `backend/app/strategy` | Pure sizing and copy/sell decisions over immutable inputs. |
+| Risk | `backend/app/risk` | Pure final pretrade gates shared by copy and hedge order producers. |
+| Engine | `backend/app/engine` | Copy orchestration: concurrent context reads, journaling, reservation, execution. |
+| Execution | `backend/app/execution` | Venue-neutral order contracts plus paper and live executors. |
+| Feeds | `backend/app/feeds` | Polygon trade detection, public wallet observation and idempotent trade storage. |
 | Persistence | `backend/app/db` | SQLAlchemy 2.0 ORM, Alembic migrations, Decimal columns (`NUMERIC(38,18)`). |
-| Integrations | `backend/app/integrations` | HTTP/WS adapters that return domain models. Retries with exponential backoff + jitter, honour `Retry-After`. |
-| Services | `backend/app/services` | Orchestration: load state, call domain, persist atomically, publish events. |
-| Transport | `backend/app/api` | FastAPI routers, auth, WebSocket fan-out. No business logic. |
+| Integrations | `backend/app/integrations` | HTTP/WS adapters returning domain models; bounded retries with jitter. |
+| Services | `backend/app/services` | Ledger, hedging, replay, settings and worker lifecycle. |
+| Transport | `backend/app/api` | FastAPI routers, auth and WebSocket fan-out. No business logic. |
 
 ## Copy pipeline
 
 ```mermaid
 sequenceDiagram
-  participant WM as WalletMonitor
-  participant ES as TradeEventStore
-  participant CS as CopySignalService
-  participant EQ as EquityEstimator
-  participant RK as Risk+Sizing
-  participant PX as PaperExecution
+  participant EX as Polygon exchange
+  participant CF as ChainFeed
+  participant TP as TradeTape
+  participant CE as CopyEngine
+  participant CX as ContextLoader
+  participant ST as Strategy
+  participant RK as Pretrade risk
+  participant VN as Executor
   participant LD as Ledger
-  WM->>ES: ingest(activity page)  (dedupe on event_key)
-  ES-->>CS: new TRADE events (ordered by block time)
-  CS->>EQ: pre-trade source equity @ trade.ts
-  CS->>LD: pre-trade user equity snapshot
-  CS->>RK: size_copy → evaluate_buy
-  RK-->>CS: approved budget + limit + reasons
-  CS->>LD: reserve(budget)  (atomic conditional UPDATE)
-  CS->>PX: execute(book walk after delay)
-  PX->>LD: settle fill → lot + cash txn, release reservation
+  EX-->>CF: fill log (WebSocket push)
+  CF->>TP: ingest source trade (cross-source dedupe)
+  TP-->>CE: new TRADE event
+  CE->>CX: load market, book, equity, portfolio concurrently
+  CX-->>CE: immutable context
+  CE->>ST: screen and decide size/action
+  CE->>RK: final book, halt and exposure checks
+  CE->>LD: reserve approved budget (atomic conditional UPDATE)
+  CE->>VN: execute approved instruction
+  VN->>LD: settle fill and release reservation atomically
 ```
 
 ## Core invariants
