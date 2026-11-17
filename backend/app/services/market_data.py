@@ -55,6 +55,7 @@ class MarketDataService:
         live: LiveBookSource | None = None,
         *,
         market_ttl: timedelta = timedelta(minutes=5),
+        market_stale_max: timedelta = timedelta(minutes=30),
         book_ttl: timedelta = timedelta(seconds=5),
         fresh_max_age: timedelta = timedelta(seconds=2),
         mark_max_age: timedelta = timedelta(minutes=5),
@@ -66,6 +67,8 @@ class MarketDataService:
         self._markets: dict[str, MarketInfo] = {}
         self._books: dict[str, OrderBook] = {}
         self._market_ttl = market_ttl
+        self._market_stale_max = market_stale_max
+        self._refreshing: set[asyncio.Task[MarketInfo | None]] = set()
         self._book_ttl = book_ttl
         self._fresh_max_age = fresh_max_age
         self._mark_max_age = mark_max_age
@@ -75,11 +78,33 @@ class MarketDataService:
     def _lock(self, key: str) -> asyncio.Lock:
         return self._locks.setdefault(key, asyncio.Lock())
 
-    async def get_market(self, condition_id: str, *, refresh: bool = False) -> MarketInfo | None:
+    async def get_market(
+        self, condition_id: str, *, refresh: bool = False, watch: bool = True
+    ) -> MarketInfo | None:
+        """Metadata for ``condition_id``; ``watch`` also subscribes its books to the stream.
+
+        Past ``market_ttl`` a cached market is still returned at once, up to
+        ``market_stale_max`` old, while a background fetch refreshes it: a copy never waits
+        on Gamma for a market it has seen, and the next copy sees a fresh closed/fees state.
+        """
         cached = self._markets.get(condition_id)
         now = self._clock.now()
-        if cached and not refresh and now - cached.fetched_at < self._market_ttl:
-            return cached
+        if cached and not refresh:
+            age = now - cached.fetched_at
+            if age < self._market_ttl:
+                return cached
+            if age < self._market_stale_max:
+                if not self._lock(f"m:{condition_id}").locked():
+                    task = asyncio.create_task(self._fetch_market(condition_id, refresh, watch))
+                    self._refreshing.add(task)
+                    task.add_done_callback(self._refreshing.discard)
+                return cached
+        return await self._fetch_market(condition_id, refresh, watch)
+
+    async def _fetch_market(
+        self, condition_id: str, refresh: bool, watch: bool
+    ) -> MarketInfo | None:
+        now = self._clock.now()
         async with self._lock(f"m:{condition_id}"):
             cached = self._markets.get(condition_id)
             if cached and not refresh and now - cached.fetched_at < self._market_ttl:
@@ -94,7 +119,7 @@ class MarketDataService:
                 return cached  # stale metadata beats none; callers check fetched_at
             if info is not None:
                 self._markets[condition_id] = info
-                if self._live is not None:
+                if watch and self._live is not None:
                     self._live.watch(t.token_id for t in info.tokens)
             return info
 

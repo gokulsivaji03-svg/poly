@@ -107,6 +107,22 @@ class MarketMetadataClient:
         info = parse_gamma_market(match, self._clock.now())
         return await self._validate_complement(info)
 
+    async def recent(self, limit: int = 100) -> list[MarketInfo]:
+        """The newest open markets, newest first (no complement validation)."""
+        body = await self._http.get_json(
+            f"{self._gamma}/markets",
+            {"order": "id", "ascending": "false", "closed": "false", "limit": limit},
+        )
+        rows = body if isinstance(body, list) else body.get("data", [])
+        now = self._clock.now()
+        out: list[MarketInfo] = []
+        for m in rows:
+            try:
+                out.append(parse_gamma_market(m, now))
+            except (KeyError, TypeError, ValueError):
+                continue  # one malformed listing row must not hide the others
+        return out
+
     async def fetch_by_token(self, token_id: str) -> MarketInfo | None:
         """Market owning outcome token ``token_id`` (no complement validation)."""
         match = await self._find(
