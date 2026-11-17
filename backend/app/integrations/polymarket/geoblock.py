@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from app.core.clock import Clock
 from app.integrations.http import ResilientHttp, UpstreamError
@@ -43,3 +43,10 @@ class GeoblockChecker:
             status = GeoStatus(None, None, None, self._clock.now(), error=str(exc))
         self.last = status
         return status
+
+    async def current(self, max_age: timedelta) -> GeoStatus:
+        """The last result if it is at most ``max_age`` old, else a fresh check."""
+        last = self.last
+        if last is not None and self._clock.now() - last.checked_at <= max_age:
+            return last
+        return await self.check()

@@ -83,10 +83,11 @@ class CopyEngine:
         if ev.type != "TRADE" or ev.side not in ("BUY", "SELL") or ev.is_backfill:
             return None  # non-trades and pre-follow history are recorded, never copied
         timer = timer or StageTimer()
-        sig = await self._journal.open(ev)
+        sig, settings = await asyncio.gather(
+            self._journal.open(ev), self._settings.get(refresh=True)
+        )
         if sig.status != SignalStatus.PENDING:
             return sig
-        settings = await self._settings.get(refresh=True)
         followed = wallet.removed_at is None and wallet.follow
         skip = screen(source_trade(ev), followed=followed, settings=settings)
         if skip is not None:
@@ -161,7 +162,6 @@ class CopyEngine:
                 sig, SignalStatus.REJECTED, [*reasons, short], timer=timer, **record
             )
         decided_at = self._clock.now()
-        sig = await self._journal.save(sig, decided_at=decided_at, **record)
         result = await self._execute(
             ExecutionRequest(
                 account_id=self.account_id,
@@ -187,7 +187,9 @@ class CopyEngine:
             settings,
         )
         timer.mark(Stage.EXECUTED)
-        return await self._journal.record_execution(sig, result, reasons, decided_at, timer)
+        return await self._journal.record_execution(
+            sig, result, reasons, decided_at, timer, **record
+        )
 
     async def _sell(
         self,
@@ -223,9 +225,6 @@ class CopyEngine:
                 **intent.record,
             )
         decided_at = self._clock.now()
-        sig = await self._journal.save(
-            sig, decided_at=decided_at, limit_price=gate.limit_price, **intent.record
-        )
         market = inputs.market
         result = await self._execute(
             ExecutionRequest(
@@ -250,7 +249,13 @@ class CopyEngine:
         )
         timer.mark(Stage.EXECUTED)
         return await self._journal.record_execution(
-            sig, result, [*intent.reasons], decided_at, timer
+            sig,
+            result,
+            [*intent.reasons],
+            decided_at,
+            timer,
+            limit_price=gate.limit_price,
+            **intent.record,
         )
 
     async def _finish_skip(self, sig: CopySignal, skip: Skip, timer: StageTimer) -> CopySignal:

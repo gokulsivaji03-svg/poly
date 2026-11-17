@@ -66,7 +66,7 @@ class TradeTape:
             }
             for r in rows
         ]
-        inserted_ids: list[int] = []
+        events: list[SourceEvent] = []
         async with self._sm() as s, s.begin():
             await s.execute(
                 text("SELECT pg_advisory_xact_lock(hashtext('source_events'), :w)"),
@@ -97,23 +97,12 @@ class TradeTape:
                     return []
             # PostgreSQL caps bind parameters at 32767 per statement; chunk large backfills.
             for i in range(0, len(values), INSERT_CHUNK):
-                inserted_ids += (
+                events += (
                     await s.scalars(
                         pg_insert(SourceEvent)
                         .values(values[i : i + INSERT_CHUNK])
                         .on_conflict_do_nothing(index_elements=["event_key"])
-                        .returning(SourceEvent.id)
-                    )
-                ).all()
-            if not inserted_ids:
-                return []
-            events: list[SourceEvent] = []
-            for i in range(0, len(inserted_ids), INSERT_CHUNK):
-                events += (
-                    await s.scalars(
-                        select(SourceEvent).where(
-                            SourceEvent.id.in_(inserted_ids[i : i + INSERT_CHUNK])
-                        )
+                        .returning(SourceEvent)
                     )
                 ).all()
             return sorted(events, key=lambda e: (e.block_ts, e.id))

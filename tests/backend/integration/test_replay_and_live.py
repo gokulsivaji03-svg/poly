@@ -257,6 +257,42 @@ async def test_live_order_placed_and_booked_when_every_gate_passes(sm, clock):
     assert await ledger.verify(acct) == []
 
 
+def live_buy(acct: int, key: str) -> ExecutionRequest:
+    return replace(live_req(acct, key), budget=D("5"))
+
+
+async def test_live_orders_reuse_a_recent_geoblock_check(sm, clock):
+    with respx.mock() as router:
+        geo = router.get("https://geo.test/api/geoblock").respond(
+            200, json={"blocked": False, "country": "XX", "region": ""}
+        )
+        engine, client, _ledger, acct, http = await _live_engine(sm, clock, geo_blocked=False)
+        first = await engine.execute(live_buy(acct, "geo-1"))
+        clock.advance(60)
+        second = await engine.execute(live_buy(acct, "geo-2"))
+        assert geo.call_count == 1, "second order reused the 60 s old result"
+        clock.advance(31)
+        third = await engine.execute(live_buy(acct, "geo-3"))
+        assert geo.call_count == 2, "a result older than 90 s is refreshed"
+        await http.aclose()
+    assert [r.status for r in (first, second, third)] == [OrderStatus.FILLED] * 3
+    assert len(client.calls) == 3
+
+
+async def test_live_order_refused_on_a_recent_blocked_result_without_refetching(sm, clock):
+    with respx.mock() as router:
+        geo = router.get("https://geo.test/api/geoblock").respond(
+            200, json={"blocked": True, "country": "US", "region": "CA"}
+        )
+        engine, client, _ledger, acct, http = await _live_engine(sm, clock, geo_blocked=True)
+        await engine.execute(live_buy(acct, "blk-1"))
+        res = await engine.execute(live_buy(acct, "blk-2"))
+        await http.aclose()
+    assert geo.call_count == 1
+    assert res.status is OrderStatus.REJECTED and res.reason.startswith("LIVE_DISABLED")
+    assert client.calls == []
+
+
 async def test_live_runtime_refuses_to_start_workers_when_geoblocked(sm):
     clock = ManualClock(NOW)
     world = World()

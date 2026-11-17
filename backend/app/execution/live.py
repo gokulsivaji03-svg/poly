@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
+from datetime import timedelta
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -26,6 +27,10 @@ from app.services.ledger import PortfolioLedger
 log = logging.getLogger(__name__)
 
 ClientFactory = Callable[[], Awaitable[LiveOrderClient]]
+
+ORDER_GEOBLOCK_MAX_AGE = timedelta(seconds=90)
+"""An order may reuse a geoblock result this old. The upstream-health worker refreshes it
+every 60 s, so the 120-430 ms HTTPS check stays off the order path."""
 
 
 class LiveExecutor(PaperExecutor):
@@ -76,8 +81,7 @@ class LiveExecutor(PaperExecutor):
     ) -> ObtainedFill | str:
         if self._uncertain:
             raise LiveTradingUnavailable("Live execution halted: uncertain venue outcome")
-        # Eligibility is re-checked immediately before every order; never cached.
-        status = await self._gate.check(fresh=True)
+        status = await self._gate.check(max_age=ORDER_GEOBLOCK_MAX_AGE)
         if not status.live_enabled:
             log.warning("live order refused", extra={"reason": status.reason})
             return f"LIVE_DISABLED: {status.reason}"

@@ -361,7 +361,7 @@ class Runtime:
         if not self.cfg.run_workers:
             return
         if self.cfg.execution_mode is ExecutionMode.LIVE:
-            status = await self.gate.check(fresh=True)
+            status = await self.gate.check()
             if not status.live_enabled:
                 # Restricted or misconfigured: never start trading workers in LIVE mode.
                 self.live_block_reason = status.reason
@@ -380,7 +380,7 @@ class Runtime:
         await self.ledger.sync_cash(self.account_id, balance, "Exchange collateral balance sync")
 
     async def venue_status(self) -> list[dict[str, Any]]:
-        intl = await self.gate.check(fresh=False)
+        intl = await self.gate.check(max_age=timedelta.max)
         return [intl.to_dict(), US_VENUE.to_dict()]
 
     async def stop(self) -> None:

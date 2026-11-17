@@ -43,7 +43,7 @@ class SignalJournal:
 
     async def open(self, ev: SourceEvent) -> CopySignal:
         async with self._sm() as s, s.begin():
-            await s.execute(
+            sig = await s.scalar(
                 pg_insert(CopySignal)
                 .values(
                     source_event_id=ev.id,
@@ -60,8 +60,12 @@ class SignalJournal:
                     detection_lag_ms=ms_between(ev.block_ts, ev.detected_at),
                 )
                 .on_conflict_do_nothing(index_elements=["source_event_id"])
+                .returning(CopySignal)
             )
-            sig = await s.scalar(select(CopySignal).where(CopySignal.source_event_id == ev.id))
+            if sig is None:  # reprocessing: the signal was opened before
+                sig = await s.scalar(
+                    select(CopySignal).where(CopySignal.source_event_id == ev.id)
+                )
             assert sig is not None
         return sig
 
@@ -102,7 +106,13 @@ class SignalJournal:
         reasons: list[Reason],
         decided_at: datetime,
         timer: StageTimer,
+        **decision: Any,
     ) -> CopySignal:
+        """Finish ``sig`` with its execution and the ``decision`` fields it was made with.
+
+        The decision is written here, once, rather than before execution: a crash in between
+        leaves the signal PENDING, and recovery re-decides while the order's idempotency key
+        returns the original fill."""
         reasons = list(reasons)
         if result.status is OrderStatus.PARTIALLY_FILLED:
             reasons.append(
@@ -123,6 +133,7 @@ class SignalJournal:
             reasons,
             timer=timer,
             decided_at=decided_at,
+            **decision,
             order_id=result.order_id,
             executed_at=self._clock.now() if fill else None,
             filled_shares=fill.net_shares if fill else None,

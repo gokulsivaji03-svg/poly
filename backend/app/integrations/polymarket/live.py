@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import timedelta
 from decimal import Decimal
 from typing import Any, Protocol
 
@@ -84,9 +85,11 @@ class LiveGate:
             out.append("Live credentials not configured")
         return out
 
-    async def check(self, *, fresh: bool = True) -> VenueStatus:
+    async def check(self, *, max_age: timedelta | None = None) -> VenueStatus:
+        """Eligibility now. ``max_age`` reuses a geoblock result up to that old instead of
+        making an HTTPS call; a reused blocked or failed result still refuses."""
         blockers = self.static_blockers()
-        geo = await self._geo.check() if fresh or self._geo.last is None else self._geo.last
+        geo = await self._geo.check() if max_age is None else await self._geo.current(max_age)
         if geo.blocked is None:
             blockers.append(f"Geoblock check failed ({geo.error}); treated as restricted")
         elif geo.blocked:
