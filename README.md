@@ -80,7 +80,8 @@ pause/resume strategies, and capture screenshots; run them against a development
 
 ## Design and operational boundaries
 
-[Architecture](docs/ARCHITECTURE.md) · [API contract](docs/API.md) ·
+[Architecture](docs/ARCHITECTURE.md) · [Strategy evidence](docs/STRATEGY.md) ·
+[Latency: network, CPU, hardware](docs/LATENCY.md) · [API contract](docs/API.md) ·
 [Current Polymarket API research](docs/polymarket-api-research.md) ·
 [Operations and safety](docs/OPERATIONS.md)
 

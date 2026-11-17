@@ -84,6 +84,7 @@ async def env(sm, world):
                 "paper": {"execution_delay_ms": 0},
                 "sizing": {"mode": "FIXED_AMOUNT", "fixed_amount_usd": "40"},
                 "risk": {"min_cash_reserve_usd": "0"},
+                "hedge": {"enabled": True},
             }
         )
         yield rt, clock, rest
