@@ -10,8 +10,8 @@ Two subscriptions run side by side on the same endpoint:
 
 Each confirmed fill is joined to its pending sighting on (tx, maker, token, side). The
 report gives coverage (share of confirmed fills seen pending first), lead time (log
-arrival minus pending arrival) and decode agreement (pending maker amount equals the
-log's ``makerAmountFilled``).
+arrival minus pending arrival) and decode agreement (pending decode equals the
+log's shares and USDC).
 """
 
 from __future__ import annotations
@@ -38,15 +38,14 @@ Key = tuple[str, str, str, str]
 """(tx_hash, maker, token_id, side)"""
 
 
-def _key(f: ChainFill) -> tuple[Key, Decimal]:
-    given = f.usdc if f.side.value == "BUY" else f.shares  # the leg a pending decode knows
-    return (f.tx_hash, f.maker, f.token_id, f.side.value), given
+def _key(f: ChainFill) -> tuple[Key, tuple[Decimal, Decimal]]:
+    return (f.tx_hash, f.maker, f.token_id, f.side.value), (f.shares, f.usdc)
 
 
 @dataclass
 class Probe:
-    pending: dict[Key, tuple[float, Decimal]] = field(default_factory=dict)
-    confirmed: dict[Key, tuple[float, Decimal]] = field(default_factory=dict)
+    pending: dict[Key, tuple[float, tuple[Decimal, Decimal]]] = field(default_factory=dict)
+    confirmed: dict[Key, tuple[float, tuple[Decimal, Decimal]]] = field(default_factory=dict)
 
     def on_pending(self, tx: dict[str, Any], now: float) -> None:
         for f in decode_pending_fills(tx):
@@ -75,7 +74,7 @@ class Probe:
             f"confirmed fills          {n}",
             f"seen pending first       {len(leads)} ({len(leads) / n:.0%})",
             f"lead ms p10/p50/p90      {q[0]:.0f} / {statistics.median(leads):.0f} / {q[8]:.0f}",
-            f"decode agreement         {agree}/{len(leads)} maker-asset amounts equal",
+            f"decode agreement         {agree}/{len(leads)} fills equal in shares and USDC",
         ])
 
 
