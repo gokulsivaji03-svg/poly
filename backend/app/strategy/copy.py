@@ -53,6 +53,8 @@ class BuyContext:
     market: MarketInfo | None
     equity: Decimal
     """Our equity (cash + marked positions) right now."""
+    bankroll: Decimal
+    """The equity this wallet's copies size from: ``equity``, or its slice when split."""
     source_equity: EquityEstimate
     source_sold_after: bool
     sizing: SizingSettings
@@ -134,7 +136,7 @@ def decide_buy(ctx: BuyContext) -> BuyIntent | Skip:
     sizing = size_copy(
         source_trade_cost=ctx.trade.cost,
         source_equity=ctx.source_equity,
-        user_equity=ctx.equity,
+        user_equity=ctx.bankroll,
         settings=ctx.sizing,
     )
     reasons.extend(Reason("SIZING_NOTE", n) for n in sizing.notes)
@@ -143,7 +145,7 @@ def decide_buy(ctx: BuyContext) -> BuyIntent | Skip:
         "source_equity_coverage": ctx.source_equity.coverage.value,
         "source_confidence": ctx.source_equity.confidence,
         "source_alloc_pct": sizing.source_allocation_pct,
-        "user_equity": ctx.equity,
+        "user_equity": ctx.bankroll,
         "proposed_pct": sizing.proposed_copy_pct,
         "target_budget": sizing.target_budget,
     }

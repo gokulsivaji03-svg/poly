@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.money import ZERO
@@ -51,6 +52,7 @@ class BuyInputs:
     snapshot: PortfolioSnapshot
     book: OrderBook | None
     buys_in_market: int
+    wallet_headroom: Decimal | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,7 +78,15 @@ class ContextLoader:
     async def buy(
         self, ev: SourceEvent, wallet: WatchedWallet, settings: StrategySettings
     ) -> BuyInputs:
-        sold_after, market, (ledger, view, day_pnl), estimate, book = await asyncio.gather(
+        sizing = effective_sizing(settings.sizing, wallet.sizing_override)
+        (
+            sold_after,
+            market,
+            (ledger, view, day_pnl),
+            estimate,
+            book,
+            followed,
+        ) = await asyncio.gather(
             self._source_sold_after(ev),
             self._md.get_market(ev.condition_id),
             self._portfolio.copy_inputs(),
@@ -84,19 +94,34 @@ class ContextLoader:
                 ev.wallet_id, wallet.address, ev.block_ts, exclude_event_id=ev.id
             ),
             self._md.get_book(ev.token_id),
+            self._followed(),
         )
+        bankroll, headroom = view.equity, None
+        if sizing.split_across_wallets:
+            bankroll = view.equity / max(followed, 1)
+            held = sum(
+                (
+                    lt.cost_remaining
+                    for lt in ledger.lots
+                    if lt.source_wallet == wallet.address and lt.origin == LotOrigin.COPY
+                ),
+                ZERO,
+            )
+            headroom = bankroll - held
         return BuyInputs(
             strategy=BuyContext(
                 trade=source_trade(ev),
                 market=market,
                 equity=view.equity,
+                bankroll=bankroll,
                 source_equity=estimate,
                 source_sold_after=sold_after,
-                sizing=effective_sizing(settings.sizing, wallet.sizing_override),
+                sizing=sizing,
             ),
             snapshot=view.risk_snapshot(day_pnl),
             book=book,
             buys_in_market=ledger.copy_buys.get(ev.condition_id, 0),
+            wallet_headroom=headroom,
         )
 
     async def sell(self, ev: SourceEvent, wallet: WatchedWallet) -> SellInputs:
@@ -119,7 +144,19 @@ class ContextLoader:
         """After an execution wrote the ledger: reload the snapshot the next copy reads."""
         self._portfolio.refresh_soon()
 
+    async def _followed(self) -> int:
+        async with self._sm() as s:
+            return (
+                await s.scalar(
+                    select(func.count())
+                    .select_from(WatchedWallet)
+                    .where(WatchedWallet.follow.is_(True), WatchedWallet.removed_at.is_(None))
+                )
+            ) or 0
+
     async def _source_sold_after(self, ev: SourceEvent) -> bool:
+        """A SELL already seen when this BUY was detected. Never a later one: a replay holds
+        the whole history, so without the bound it would read the source's future."""
         async with self._sm() as s:
             hit = await s.scalar(
                 select(SourceEvent.id)
@@ -129,6 +166,7 @@ class ContextLoader:
                     SourceEvent.type == "TRADE",
                     SourceEvent.side == "SELL",
                     SourceEvent.block_ts > ev.block_ts,
+                    SourceEvent.block_ts <= ev.detected_at,
                 )
                 .limit(1)
             )

@@ -17,6 +17,7 @@ const SETTINGS: StrategySettings = {
     unknown_equity_policy: 'SKIP',
     lower_bound_equity_policy: 'USE_CAPPED',
     min_source_confidence: '0.5',
+    split_across_wallets: true,
   },
   risk: {
     max_pct_per_trade: '0.020000',

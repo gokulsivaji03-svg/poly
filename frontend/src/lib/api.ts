@@ -431,6 +431,8 @@ export interface SizingSettings {
   unknown_equity_policy: 'SKIP' | 'FALLBACK_FIXED'
   lower_bound_equity_policy: 'USE_CAPPED' | 'SKIP'
   min_source_confidence: Decimal
+  /** Each followed wallet sizes from, and may hold at most, an equal slice of equity. */
+  split_across_wallets: boolean
 }
 
 /** A null limit is switched off. */
