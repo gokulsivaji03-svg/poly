@@ -5,7 +5,7 @@ from datetime import timedelta
 from decimal import Decimal
 
 from app.core.clock import ManualClock
-from app.db.models import AccountMode, LotOrigin, OrderKind, OrderStatus
+from app.db.models import AccountMode, LotOrigin, OrderKind
 from app.domain.market import Side
 from app.execution.orders import ExecutionRequest
 from app.execution.paper import PaperExecutor
@@ -107,8 +107,8 @@ async def run_sequence(ops) -> None:
                         target_shares=amount,
                     )
                 )
-                if amount > free:
-                    assert r.status in (OrderStatus.FAILED, OrderStatus.REJECTED)
+                if r.filled:
+                    assert r.fill.gross_shares <= free  # never sell shares we do not hold
             elif kind == "match":
                 lots = await ledger.open_lots(acct)
                 ys = [
