@@ -147,6 +147,7 @@ class World:
         self.fill_logs: list[dict[str, Any]] = []
         self.rpc_calls: Counter[str] = Counter()
         self.receipts: dict[str, dict[str, Any]] = {}
+        self.logs_node_behind = False
         self.rpc_errors = 0
         """Next N eth_getLogs calls fail with HTTP 503 (RPC outage)."""
 
@@ -274,6 +275,9 @@ class World:
             return ok(self.receipts.get(params[0]))
         if method == "eth_getBlockByNumber":
             return ok({"timestamp": hex(self.block_ts.get(int(params[0], 16), 0))})
+        if method == "eth_getLogs" and self.logs_node_behind:
+            return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "error": {
+                "code": -32000, "message": "invalid block range params"}})
         if method == "eth_getLogs":
             f = params[0]
             lo, hi = int(f["fromBlock"], 16), int(f["toBlock"], 16)
