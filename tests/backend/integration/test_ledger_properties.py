@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from conftest import TEST_DB, truncate_all
-from factories import COND, NO, NOW, YES, D, FakeBooks, book, fees
+from factories import COND, NO, NOW, YES, D, FakeBooks, book, fees, portfolio_view
 
 price = st.decimals(min_value="0.05", max_value="0.95", places=2)
 op = st.one_of(
@@ -138,7 +138,7 @@ async def run_sequence(ops) -> None:
             assert a.cash >= 0 and 0 <= a.reserved <= a.cash
             assert await ledger.verify(acct) == []
             # No value from nothing: equity at cost == start + realized - (fees already in cost)
-            view = await ledger.portfolio(acct, {})
+            view = await portfolio_view(ledger, acct, {})
             assert view.equity == start + a.realized_pnl
     finally:
         await engine.dispose()

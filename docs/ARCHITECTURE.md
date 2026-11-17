@@ -106,11 +106,11 @@ Every copy signal records `stage_us`: monotonic microseconds from fill receipt t
 |---|---|---|
 | taped | 1.4 ms | source event committed |
 | started | 1.1 ms | journal row, settings read, wallet queue, market lock |
-| context | 3.5 ms | market, book, equity, portfolio reads in parallel |
+| context | 2.2 ms | market, book, equity, portfolio reads in parallel |
 | decided | 0.02 ms | strategy and pre-trade risk |
 | reserved | 1.0 ms | atomic cash reservation |
 | executed | 3.5 ms | idempotent order insert, fill, ledger booking |
-| **total** | **10.8 ms** | 34 SQL statements; ~45% PostgreSQL wait, ~40% SQLAlchemy CPU |
+| **total** | **9.9 ms** | ~32 SQL statements; ~45% PostgreSQL wait, ~40% SQLAlchemy CPU |
 
 The local service time is small next to the network. Detection takes hundreds of milliseconds. A CLOB order from the US West Coast takes about 183 ms. See [LATENCY.md](LATENCY.md) for the network and hardware plan.
 
