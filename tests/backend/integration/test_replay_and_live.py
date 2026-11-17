@@ -25,7 +25,17 @@ from app.integrations.polymarket.live import LiveGate, LiveTradingUnavailable
 from app.runtime import Runtime
 from app.services.ledger import PortfolioLedger
 from app.services.replay import ReplayParams
-from scenario import COND, NO, WALLET_A, YES, FakeRest, World, make_runtime, scenario_settings
+from scenario import (
+    COND,
+    NO,
+    WALLET_A,
+    YES,
+    FakeRest,
+    World,
+    activity,
+    make_runtime,
+    scenario_settings,
+)
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -76,9 +86,13 @@ def trade(wallet_id: int, at, *, price="0.40", size="500", key="k") -> SourceEve
 
 
 @pytest.fixture
-async def rt(sm):
+def world():
+    return World()
+
+
+@pytest.fixture
+async def rt(sm, world):
     clock = ManualClock(NOW + timedelta(days=1))  # "today" is after the replay window
-    world = World()
     with respx.mock(assert_all_called=False) as router:
         world.install(router)
         runtime = await make_runtime(TEST_DB, clock, FakeRest(clock), create_async_engine(TEST_DB))
@@ -120,6 +134,7 @@ async def test_replay_uses_only_past_snapshots_and_never_touches_live(rt):
             wallet_ids=[w.id],
             starting_bankroll=D("500"),
             detection_delay_s=2,
+            prices="recorded",
         )
     )
     await rt.replay.wait()
@@ -147,6 +162,48 @@ async def test_replay_uses_only_past_snapshots_and_never_touches_live(rt):
         live_before.realized_pnl,
     )
     assert await rt.ledger.open_lots(rt.account_id) == []
+
+
+async def test_history_replay_fills_at_minute_bars_and_settles_at_resolution(rt, world):
+    w = await rt.registry.add(WALLET_A)
+    async with rt.sm() as s, s.begin():
+        s.add(
+            WalletEquitySnapshot(
+                wallet_id=w.id,
+                observed_at=START + timedelta(hours=2),
+                positions_value=D("4000"),
+                cash_balance=D("6000"),
+                coverage="POSITIONS_AND_CASH",
+                open_positions=3,
+            )
+        )
+    world.activity[WALLET_A] = [
+        activity(WALLET_A, ts=START + timedelta(seconds=60), price="0.40", tx="0xh1"),
+        activity(WALLET_A, ts=START + timedelta(seconds=300), price="0.40", tx="0xh2"),
+    ]
+    world.prices[YES] = [(START, "0.40"), (START + timedelta(seconds=240), "0.50")]
+    world.resolution = {YES: "1", NO: "0"}
+    world.closed_at = START + timedelta(minutes=30)
+    run_id = await rt.replay.submit(
+        ReplayParams(
+            start=START,
+            end=START + timedelta(hours=3),
+            wallet_ids=[w.id],
+            starting_bankroll=D("500"),
+        )
+    )
+    await rt.replay.wait()
+    async with rt.sm() as s:
+        run = await s.get(ReplayRun, run_id)
+    assert run.status == "COMPLETED", run.error
+    sigs, summary = run.result["signals"], run.result["summary"]
+    assert [sg["status"] for sg in sigs] == ["EXECUTED", "REJECTED"]
+    assert D(sigs[0]["avg_fill_price"]) == D("0.40"), "filled at the bar before detection"
+    assert sigs[1]["reasons"][-1] == "PRICE_MOVED", "the 0.50 bar is past the limit"
+    assert (summary["activity_fetched"], summary["equity_backfilled"]) == (2, 1)
+    assert summary["minute_bars_used"] >= 2 and summary["prices"] == "history"
+    assert D(summary["realized_pnl"]) == D("15"), "25 shares bought at 0.40 paid out at 1"
+    assert D(summary["final_equity"]) == D("515") and summary["ledger_ok"] is True
 
 
 async def test_replay_rejects_invalid_windows():

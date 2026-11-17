@@ -572,8 +572,12 @@ export interface ReplayParams {
   starting_bankroll: Decimal
   /** Integer seconds, from 0 through 3600. */
   detection_delay_s?: number
+  /** `history` fetches activity and CLOB minute bars; `recorded` uses only local recordings. */
+  prices?: ReplayPrices
   settings?: SettingsPatch
 }
+
+export type ReplayPrices = 'history' | 'recorded'
 
 export interface ReplaySummary {
   final_equity: Decimal | null
@@ -585,6 +589,12 @@ export interface ReplaySummary {
   signals: Partial<Record<SignalStatus, number>>
   events_replayed: number | null
   snapshots_used: number | null
+  /** Absent on runs from before history replays. */
+  prices?: ReplayPrices
+  minute_bars_used?: number
+  activity_fetched?: number
+  /** Wallets with no equity snapshot before the window, sized from their earliest one. */
+  equity_backfilled?: number
   ledger_ok: boolean
 }
 

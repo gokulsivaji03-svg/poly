@@ -22,6 +22,7 @@ from app.runtime import Runtime
 
 DATA = "https://data-api.test"
 GAMMA = "https://gamma.test"
+CLOB = "https://clob.test"
 RPC = "https://rpc.test"
 COND = "0x" + "cd" * 32
 YES = "101"
@@ -142,6 +143,10 @@ class World:
         self.activity_errors = 0
         self.fee_rate: str | None = "0"
         self.resolution: dict[str, str] | None = None
+        self.closed_at: datetime | None = None
+        """Gamma ``closedTime`` of a resolved market."""
+        self.prices: dict[str, list[tuple[datetime, str]]] = {}
+        """Per-token one-minute bars served by ``/prices-history``."""
         self.head = 1000
         self.block_ts: dict[int, int] = {}
         self.fill_logs: list[dict[str, Any]] = []
@@ -161,6 +166,7 @@ class World:
         )
         router.get(f"{DATA}/v2/tokens").mock(side_effect=self._tokens)
         router.get(f"{GAMMA}/markets").mock(side_effect=self._gamma)
+        router.get(f"{CLOB}/prices-history").mock(side_effect=self._prices)
         router.post(RPC).mock(side_effect=self._rpc)
         router.get("https://geo.test/api/geoblock").mock(
             return_value=httpx.Response(
@@ -232,6 +238,16 @@ class World:
             ]
         return httpx.Response(200, json={"data": {"proxy_wallet": user, "points": points}})
 
+    def _prices(self, request: httpx.Request) -> httpx.Response:
+        q = request.url.params
+        lo, hi = int(q["startTs"]), int(q["endTs"])
+        bars = [
+            {"t": int(at.timestamp()), "p": float(p)}
+            for at, p in self.prices.get(q["market"], [])
+            if lo <= at.timestamp() <= hi
+        ]
+        return httpx.Response(200, json={"history": bars})
+
     def _gamma(self, request: httpx.Request) -> httpx.Response:
         m: dict[str, Any] = {
             "conditionId": COND,
@@ -246,6 +262,8 @@ class World:
             "closed": self.resolution is not None,
             "acceptingOrders": self.resolution is None,
         }
+        if self.closed_at is not None:
+            m["closedTime"] = self.closed_at.strftime("%Y-%m-%d %H:%M:%S+00")
         # Real Gamma: the default listing hides closed markets; closed=true shows only them.
         if (request.url.params.get("closed") == "true") != (self.resolution is not None):
             return httpx.Response(200, json=[])
@@ -301,6 +319,7 @@ def scenario_settings(db_url: str) -> Settings:
         run_workers=False,
         data_api_url=DATA,
         gamma_api_url=GAMMA,
+        clob_api_url=CLOB,
         polygon_rpc_url=RPC,
         geoblock_url="https://geo.test/api/geoblock",
         equity_snapshot_interval_s=60,

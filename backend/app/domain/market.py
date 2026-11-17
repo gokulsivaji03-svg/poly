@@ -181,6 +181,8 @@ class MarketInfo(Frozen):
     complement_verified: bool = False
     """True only when the token pair was cross-checked against ``/v2/tokens``."""
     end_date: datetime | None = None
+    closed_at: datetime | None = None
+    """When trading stopped (Gamma ``closedTime``); a past moment, unlike ``end_date``."""
     fetched_at: datetime
 
     @property

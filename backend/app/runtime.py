@@ -53,6 +53,7 @@ from app.services.ledger import PortfolioLedger
 from app.services.market_catalog import MarketCatalog
 from app.services.market_data import MarketDataService
 from app.services.replay import ReplayService
+from app.services.replay_history import HistoryClient
 from app.services.settings_service import SettingsService
 from app.services.system_events import SystemEventLog
 from app.services.wallets import WalletRegistry
@@ -228,7 +229,13 @@ class Runtime:
                 sm, ledger, executor, market_data, settings, events, bus, clock, account_id
             ),
             recorder=BookRecorder(sm, market_data, clock),
-            replay=ReplayService(engine, sm, market_data, clock),
+            replay=ReplayService(
+                engine,
+                sm,
+                market_data,
+                clock,
+                HistoryClient(http, data_api, meta, cfg.clob_api_url),
+            ),
             supervisor=Supervisor(engine, clock),
             sdk=sdk,
         )
