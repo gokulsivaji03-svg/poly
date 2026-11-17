@@ -28,7 +28,7 @@ from app.db.models import (
 from app.domain.equity import EquityCoverage
 from app.runtime import Runtime
 from app.services.equity_estimator import BASE_CONFIDENCE, _decay
-from app.services.ledger import PortfolioView
+from app.services.ledger import PortfolioView, build_portfolio_view
 
 
 def s(v: Any) -> str | None:
@@ -135,9 +135,9 @@ def hedge_state_from_quantities(shares: Decimal, matched: Decimal) -> str:
 async def positions(
     rt: Runtime, hedge_states: dict[tuple[str, str], str] | None = None
 ) -> dict[str, Any]:
-    lots = await rt.ledger.open_lots(rt.account_id)
+    acct, lots = await rt.ledger.account_with_lots(rt.account_id)
     marks = await rt.market_data.marks(lt.token_id for lt in lots)
-    view = await rt.ledger.portfolio(rt.account_id, {t: m.price for t, m in marks.items()})
+    view = build_portfolio_view(acct, lots, {t: m.price for t, m in marks.items()}, rt.clock.now())
     by_token: dict[str, list[Lot]] = {}
     for lt in lots:
         by_token.setdefault(lt.token_id, []).append(lt)

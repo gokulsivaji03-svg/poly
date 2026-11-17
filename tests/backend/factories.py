@@ -90,3 +90,11 @@ class FakeBooks:
         if b is None or token_id in self.pinned:
             return b
         return b.model_copy(update={"received_at": self.clock.now()})
+
+
+async def portfolio_view(ledger, account_id, marks):
+    """The account marked at ``marks``: what PortfolioReader computes, without market data."""
+    from app.services.ledger import build_portfolio_view
+
+    acct, lots = await ledger.account_with_lots(account_id)
+    return build_portfolio_view(acct, lots, marks, ledger._clock.now())

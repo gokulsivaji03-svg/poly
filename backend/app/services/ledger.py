@@ -753,9 +753,8 @@ class PortfolioLedger:
                 q = q.where(Lot.condition_id == condition_id)
             return list((await s.scalars(q.order_by(Lot.opened_at, Lot.id))).all())
 
-    async def portfolio(
-        self, account_id: int, marks: Mapping[str, Decimal | None]
-    ) -> PortfolioView:
+    async def account_with_lots(self, account_id: int) -> tuple[Account, list[Lot]]:
+        """The account row and its open lots, read in one session."""
         async with self._sm() as s:
             acct = await s.get(Account, account_id)
             if acct is None:
@@ -769,7 +768,7 @@ class PortfolioLedger:
                     )
                 ).all()
             )
-        return build_portfolio_view(acct, lots, marks, self._clock.now())
+        return acct, lots
 
     async def day_start_equity(self, account_id: int, day_start: datetime) -> Decimal | None:
         async with self._sm() as s:

@@ -9,7 +9,7 @@ from app.execution.orders import ExecutionRequest
 from app.execution.paper import PaperExecutor
 from app.services.ledger import PortfolioLedger
 
-from factories import COND, NO, NOW, YES, D, FakeBooks, book, fees
+from factories import COND, NO, NOW, YES, D, FakeBooks, book, fees, portfolio_view
 
 AGE = timedelta(seconds=15)
 
@@ -169,7 +169,7 @@ async def test_matched_shares_are_protected_from_sells(ledger, engine, sm):
         await ledger.match_pairs(s, allocations=[(y.lot_id, D("100"))], hedge_lot_id=n.lot_id)
     blocked = await sell(engine, acct, YES, "1", "s")
     assert blocked.status is OrderStatus.FAILED
-    view = await ledger.portfolio(acct, {YES: D("0.39"), NO: D("0.54")})
+    view = await portfolio_view(ledger, acct, {YES: D("0.39"), NO: D("0.54")})
     assert view.locked_profit == D("5")
     assert await ledger.verify(acct) == []
 
@@ -230,9 +230,9 @@ async def test_reset_account(ledger, engine):
 async def test_equity_view_uses_marks_and_flags_unmarked(ledger, engine):
     acct = await ledger.ensure_account(AccountMode.PAPER, D("1000"))
     await buy(engine, ledger, acct, YES, "40", "x")
-    view = await ledger.portfolio(acct, {YES: D("0.50")})
+    view = await portfolio_view(ledger, acct, {YES: D("0.50")})
     assert view.positions_value == D("50") and view.equity == D("1010")
     assert view.unrealized_pnl == D("10")
-    unmarked = await ledger.portfolio(acct, {})
+    unmarked = await portfolio_view(ledger, acct, {})
     assert unmarked.unmarked_positions == 1 and unmarked.equity == D("1000")
     assert isinstance(view.risk_snapshot(Decimal(0)).exposure_by_token[YES], Decimal)
