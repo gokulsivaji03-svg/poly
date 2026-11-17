@@ -38,6 +38,21 @@ Bankroll barely changes the return at 0.5¢ premium. The skipped small orders ca
 
 Limits: there is no order book, so depth, queue position and market impact are missing. Large bankrolls would move thin markets, so the bigger rows are optimistic. CONVERSION events are ignored. Source equity is a lower bound, so allocation percentages are upper bounds.
 
+## Filters
+
+Same simulation, 0.5¢ premium, $1,000 bankroll. `--max-entry-price` skips buys above a price. `--min-source-usd` skips small source buys.
+
+| filter | return | max drawdown |
+|---|---|---|
+| none | +226% | 44% |
+| max entry 0.75 (app default) | +174% | 48% |
+| max entry 0.90 | +232% | 43% |
+| min source $250 | +212% | 44% |
+| min source $1,000 | +157% | 39% |
+| min source $5,000 | +43% | 26% |
+
+The default entry cap costs this sharp about 52 points, because it skips favorites between 75¢ and 90¢ that the sharp gets right. A 0.90 cap keeps them and still drops near-certain buys, where the upside is a few cents. Size filters only lower the return, so small source trades carry edge too. The app default stays at 0.75 until more wallets are tested. One wallet is not enough to change it for everyone. The overnight paper account uses 0.90.
+
 ## Hedging gives the edge away
 
 `backtest_copy_hedge.py` copies each source BUY on the source's 60 largest markets, and separately on 60 random markets (seed 11). It then buys the complementary outcome as soon as `1 − entry − fees − hedge_ask ≥ 2¢`. Both strategies run on the same lots, so the comparison is paired. "Market" entry fills at the last minute price after the delay plus a 1¢ spread, instead of at the source's price.

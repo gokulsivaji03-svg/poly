@@ -14,3 +14,5 @@ ts	phase	decision	why	evidence	result
 2026-11-17T13:50Z	perf	warmed new listings and made market metadata stale-while-revalidate	~27% of copies are a first fill in a market and each paid ~182 ms Gamma calls	https://github.com/gokulsivaji03-svg/poly/pull/9	test fails without the warmup; 332 tests
 2026-11-17T14:00Z	backtest	swept bankroll 1k to 100k at 0.5c	check whether sub-1-dollar skipped buys hurt returns	docs/STRATEGY.md bankroll table	+226% to +236%; skips barely matter (no impact model)
 2026-11-17T14:10Z	detect	reconcile pending copies by receipt; flag reverted or dropped ones	mempool copying trades before the tx is mined	https://github.com/gokulsivaji03-svg/poly/pull/10	336 tests
+2026-11-17T14:25Z	strategy	set the paper account's max entry price to 0.90 and left the app default at 0.75	backtest: 0.90 gives +232% vs +174% at 0.75 for this sharp; one wallet is too little to change the default	docs/STRATEGY.md filters table; PUT /api/settings on :8001	paper run uses 0.90
+2026-11-17T14:25Z	strategy	did not add a minimum source trade size filter	every threshold lowered the return in the sweep	docs/STRATEGY.md filters table	not shipped
