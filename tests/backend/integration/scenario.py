@@ -145,6 +145,8 @@ class World:
         self.resolution: dict[str, str] | None = None
         self.closed_at: datetime | None = None
         """Gamma ``closedTime`` of a resolved market."""
+        self.pnl_points: dict[str, list[tuple[datetime, str]]] = {}
+        """Per-wallet hourly ``economic_pnl`` served by ``/v2/user-pnl`` when set."""
         self.prices: dict[str, list[tuple[datetime, str]]] = {}
         """Per-token one-minute bars served by ``/prices-history``."""
         self.head = 1000
@@ -225,6 +227,12 @@ class World:
 
     def _user_pnl(self, request: httpx.Request) -> httpx.Response:
         user = request.url.params["user"].lower()
+        if user in self.pnl_points:
+            series = [
+                {"timestamp": int(at.timestamp()), "economic_pnl": float(v)}
+                for at, v in self.pnl_points[user]
+            ]
+            return httpx.Response(200, json={"data": {"proxy_wallet": user, "points": series}})
         points = []
         if user in self.pnl:
             realized, unrealized = self.pnl[user]

@@ -86,6 +86,32 @@ class MarketHistory:
         )
 
 
+def equity_path(
+    anchor_equity: Decimal,
+    anchor_at: datetime,
+    pnl: list[Bar],
+    start: datetime,
+    until: datetime,
+) -> list[Bar]:
+    """A wallet's equity at each P&L point in ``[start, until)``, walked back from one
+    observation: equity(t) = anchor - (P&L at anchor - P&L at t).
+
+    That assumes no deposits or withdrawals in between. Where it would leave the wallet
+    broke, a withdrawal the P&L cannot show happened later, so the nearest later equity is
+    held instead of leaving a gap that would decay confidence to nothing."""
+    i = bisect.bisect_right(pnl, anchor_at, key=lambda b: b[0])
+    if i == 0:
+        return []
+    at_anchor = pnl[i - 1][1]
+    held = anchor_equity
+    path: list[Bar] = []
+    for t, v in reversed([b for b in pnl if start <= b[0] < until]):
+        walked = anchor_equity - (at_anchor - v)
+        held = walked if walked > 0 else held
+        path.append((t, held))
+    return path[::-1]
+
+
 class HistoryClient:
     def __init__(
         self,
@@ -98,6 +124,13 @@ class HistoryClient:
         self._data = data_api
         self._meta = metadata
         self._clob = clob_url.rstrip("/")
+
+    async def pnl(self, address: str) -> list[Bar]:
+        try:
+            return await self._data.pnl_history(address)
+        except UpstreamError as exc:
+            log.warning("replay pnl history unavailable", extra={"error": str(exc)})
+            return []
 
     async def activity(self, address: str, start: datetime, end: datetime) -> list[SourceActivity]:
         batch = await self._data.activity_since(address, start)
