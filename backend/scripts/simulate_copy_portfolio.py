@@ -128,6 +128,8 @@ def main() -> None:
     ap.add_argument("--min-order-usd", type=Decimal, default=Decimal("1"))
     ap.add_argument("--source-c0-mult", type=Decimal, default=ONE,
                     help="scale the reconstructed source starting capital (sensitivity)")
+    ap.add_argument("--multiplier", type=Decimal, default=ONE,
+                    help="scale each proportional copy (the app's sizing multiplier)")
     ap.add_argument("--max-pct-per-trade", type=Decimal, default=ONE,
                     help="cap each buy at this fraction of our equity (1 = off)")
     ap.add_argument("--max-market-pct", type=Decimal, default=ONE,
@@ -227,7 +229,9 @@ def main() -> None:
                         skips["SOURCE_EQUITY_UNKNOWN"] += 1
                     else:
                         our_equity = equity_of(us, cash)
-                        budget = our_equity * to_decimal(r["usdc_size"]) / src_equity
+                        budget = (
+                            our_equity * to_decimal(r["usdc_size"]) / src_equity * args.multiplier
+                        )
                         budget = min(budget, our_equity * args.max_pct_per_trade)
                         if args.max_market_pct < ONE:
                             budget = min(

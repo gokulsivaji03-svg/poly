@@ -34,6 +34,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -50,6 +51,7 @@ from app.integrations.polymarket.markets import parse_gamma_market
 DATA = "https://data-api.polymarket.com"
 GAMMA = "https://gamma-api.polymarket.com"
 CLOB = "https://clob.polymarket.com"
+RETRIES = 6
 HISTORY_WINDOW_S = 7 * 86400  # /prices-history rejects longer startTs..endTs spans
 
 
@@ -64,7 +66,12 @@ class Api:
         path = self._cache / f"{key}.json"
         if cache and path.exists():
             return json.loads(path.read_text())
-        resp = self._http.get(url, params=params)
+        for attempt in range(RETRIES):
+            resp = self._http.get(url, params=params)
+            if resp.status_code != 429 and resp.status_code < 500:
+                break
+            # Gamma and the Data API rate-limit bursts: back off, honouring Retry-After.
+            time.sleep(float(resp.headers.get("Retry-After") or 2**attempt))
         resp.raise_for_status()
         body = resp.json()
         if cache:
