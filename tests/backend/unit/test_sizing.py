@@ -11,7 +11,7 @@ from app.strategy.sizing import size_copy
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from factories import NOW, D
+from factories import FULL_SIZE, NOW, D
 
 
 def est(positions: str, cash: str | None, confidence: str = "0.9") -> EquityEstimate:
@@ -34,12 +34,22 @@ def test_proportional_example_from_spec():
         source_trade_cost=D("200"),
         source_equity=est("4000", "6000"),
         user_equity=D("500"),
-        settings=SizingSettings(),
+        settings=SizingSettings(**FULL_SIZE),
     )
     assert r.source_allocation_pct == D("0.02")
     assert r.target_budget == D("10")
     assert r.proposed_copy_pct == D("0.02")
     assert not r.skipped
+
+
+def test_by_default_a_copy_is_a_quarter_of_the_source_allocation():
+    r = size_copy(
+        source_trade_cost=D("200"),
+        source_equity=est("4000", "6000"),
+        user_equity=D("500"),
+        settings=SizingSettings(),
+    )
+    assert (r.source_allocation_pct, r.target_budget) == (D("0.02"), D("2.5"))
 
 
 def test_multiplier_scales_budget():
@@ -53,7 +63,7 @@ def test_multiplier_scales_budget():
 
 
 def test_changing_user_equity_changes_budget_proportionally():
-    s = SizingSettings()
+    s = SizingSettings(**FULL_SIZE)
     small = size_copy(
         source_trade_cost=D("100"), source_equity=est("1000", "0"), user_equity=D("200"), settings=s
     )
@@ -68,7 +78,7 @@ def test_unknown_source_equity_skips_by_default():
         source_trade_cost=D("50"),
         source_equity=unavailable("0xabc", NOW, NOW, "api down"),
         user_equity=D("500"),
-        settings=SizingSettings(),
+        settings=SizingSettings(**FULL_SIZE),
     )
     assert r.skipped and r.skip_code == "SOURCE_EQUITY_UNKNOWN"
     assert r.target_budget == 0
@@ -92,7 +102,7 @@ def test_lower_bound_equity_is_flagged_or_skipped():
         source_trade_cost=D("100"),
         source_equity=est("1000", None),
         user_equity=D("1000"),
-        settings=SizingSettings(),
+        settings=SizingSettings(**FULL_SIZE),
     )
     assert not used.skipped
     assert any("lower bound" in n for n in used.notes)
@@ -100,7 +110,7 @@ def test_lower_bound_equity_is_flagged_or_skipped():
         source_trade_cost=D("100"),
         source_equity=est("1000", None),
         user_equity=D("1000"),
-        settings=SizingSettings(lower_bound_equity_policy=LowerBoundEquityPolicy.SKIP),
+        settings=SizingSettings(**FULL_SIZE, lower_bound_equity_policy=LowerBoundEquityPolicy.SKIP),
     )
     assert skipped.skip_code == "SOURCE_EQUITY_LOWER_BOUND"
 
@@ -110,7 +120,7 @@ def test_low_confidence_is_skipped():
         source_trade_cost=D("10"),
         source_equity=est("100", "0", "0.1"),
         user_equity=D("100"),
-        settings=SizingSettings(),
+        settings=SizingSettings(**FULL_SIZE),
     )
     assert r.skip_code == "SOURCE_EQUITY_LOW_CONFIDENCE"
 
@@ -120,7 +130,7 @@ def test_trade_cost_larger_than_observed_equity_caps_allocation_at_100pct():
         source_trade_cost=D("500"),
         source_equity=est("100", "0"),
         user_equity=D("50"),
-        settings=SizingSettings(),
+        settings=SizingSettings(**FULL_SIZE),
     )
     assert r.source_allocation_pct == 1
     assert r.target_budget == D("50")
@@ -151,6 +161,6 @@ def test_proportional_budget_never_exceeds_user_equity_times_multiplier(cost, sr
         source_trade_cost=cost,
         source_equity=est(str(src), "0"),
         user_equity=user,
-        settings=SizingSettings(),
+        settings=SizingSettings(**FULL_SIZE),
     )
     assert Decimal(0) <= r.target_budget <= user

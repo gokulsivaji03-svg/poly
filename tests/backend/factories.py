@@ -100,6 +100,9 @@ async def portfolio_view(ledger, account_id, marks):
     return build_portfolio_view(acct, lots, marks, ledger._clock.now())
 
 
+FULL_SIZE = {"multiplier": D("1")}
+"""Proportional copies at the source's own allocation, for tests of the sizing math."""
+
 CAPS = {
     "max_pct_per_trade": D("0.05"),
     "max_position_usd": D("100"),

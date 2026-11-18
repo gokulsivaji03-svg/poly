@@ -28,7 +28,7 @@ from app.risk.pretrade import PortfolioSnapshot, check_buy
 from app.strategy.sell_policy import plan_copy_sell
 from app.strategy.sizing import size_copy
 
-from factories import CAPS, COND, NO, NOW, YES, D, book, fees, market
+from factories import CAPS, COND, FULL_SIZE, NO, NOW, YES, D, book, fees, market
 
 STEP = D("0.01")
 ZERO = Decimal(0)
@@ -55,7 +55,7 @@ def size(cost="10", src=None, user="100", **s):
         source_trade_cost=D(cost),
         source_equity=src,
         user_equity=D(user),
-        settings=SizingSettings(**s),
+        settings=SizingSettings(**{**FULL_SIZE, **s}),
     )
 
 

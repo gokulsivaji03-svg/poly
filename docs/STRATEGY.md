@@ -53,6 +53,21 @@ Same simulation, 0.5¢ premium, $1,000 bankroll. `--max-entry-price` skips buys 
 
 A 0.75 cap costs this sharp about 58 points, because it skips favorites between 75¢ and 90¢ that the sharp gets right. The app default, `RiskSettings.max_entry_price = 0.90`, keeps them and still drops near-certain buys, where the upside is a few cents. It beats no cap by 6 points here. Size filters only lower the return, so small source trades carry edge too.
 
+## Copy at a quarter of the source's size
+
+The app's replay copied the wallet over 2026-10-18 to 2026-11-17 with a $1,000 bankroll, no position or loss limits, and fills at the source's own price plus a uniform 0 to 5 cent premium (`prices="source"`). Proportional sizing uses the source's equity rebuilt from its P&L history.
+
+| wallets | multiplier | return | lowest equity |
+|---|---|---|---|
+| this wallet | 1 | −97.3% | $27 |
+| this wallet | 0.25 | +39.5% | $653 |
+| 3 followed wallets | 1 | −71.4% | $185 |
+| 3 followed wallets | 0.25 | +6.7% | $791 |
+
+At full size a copy bets as large a share of our account as the source bets of theirs, but the source can absorb a bad week and we cannot. In week 45 the source lost 16.7% on what it bought while a full-size copy fell from $683 to $50, then sat out the source's best week (+37.6%). Taker fees also cost about 2% per copy, while the source, largely a maker, earns rebates. At a quarter of the size the copy survives the drawdown and keeps the edge. `SizingSettings.multiplier` therefore defaults to 0.25.
+
+Limits: one month, and the premium range is an assumption that only live paper trading against the real book can confirm.
+
 ## Hedging gives the edge away
 
 `backtest_copy_hedge.py` copies each source BUY on the source's 60 largest markets, and separately on 60 random markets (seed 11). It then buys the complementary outcome as soon as `1 − entry − fees − hedge_ask ≥ 2¢`. Both strategies run on the same lots, so the comparison is paired. "Market" entry fills at the last minute price after the delay plus a 1¢ spread, instead of at the source's price.

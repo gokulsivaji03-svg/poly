@@ -128,6 +128,11 @@ def main() -> None:
     ap.add_argument("--min-order-usd", type=Decimal, default=Decimal("1"))
     ap.add_argument("--source-c0-mult", type=Decimal, default=ONE,
                     help="scale the reconstructed source starting capital (sensitivity)")
+    ap.add_argument("--small-orders", choices=("skip", "batch", "round-up"), default="skip",
+                    help="copies under --min-order-usd: drop them, carry them per token "
+                    "until they add up (the app's behaviour), or place the minimum")
+    ap.add_argument("--multiplier", type=Decimal, default=ONE,
+                    help="scale each proportional copy (the app's sizing multiplier)")
     ap.add_argument("--max-pct-per-trade", type=Decimal, default=ONE,
                     help="cap each buy at this fraction of our equity (1 = off)")
     ap.add_argument("--max-market-pct", type=Decimal, default=ONE,
@@ -175,6 +180,8 @@ def main() -> None:
     token_cond: dict[str, str] = {}
     skips: Counter[str] = Counter()
     copied = Counter()
+    carry: dict[str, Decimal] = defaultdict(lambda: ZERO)
+    """Batched budget per token, from copies too small to place on their own."""
     costs: dict[str, Decimal] = defaultdict(lambda: ZERO)
     curve: list[tuple[int, Decimal]] = []
     peak = args.bankroll
@@ -227,28 +234,42 @@ def main() -> None:
                         skips["SOURCE_EQUITY_UNKNOWN"] += 1
                     else:
                         our_equity = equity_of(us, cash)
-                        budget = our_equity * to_decimal(r["usdc_size"]) / src_equity
+                        budget = (
+                            our_equity * to_decimal(r["usdc_size"]) / src_equity * args.multiplier
+                        )
                         budget = min(budget, our_equity * args.max_pct_per_trade)
                         if args.max_market_pct < ONE:
                             budget = min(
                                 budget, our_equity * args.max_market_pct - market_cost(cid)
                             )
-                        limited = budget > cash
-                        budget = min(budget, cash)
-                        if budget < args.min_order_usd:
-                            skips["NO_CASH" if limited else "BELOW_MIN_ORDER"] += 1
+                        if args.small_orders == "batch":
+                            budget += carry.pop(tok, ZERO)
+                        small = budget < args.min_order_usd
+                        if small and args.small_orders == "batch":
+                            carry[tok] = budget
+                            skips["BATCHED"] += 1
                         else:
-                            entry = min(price + args.slippage, MAX_PRICE)
-                            per = entry + m.fees.fee_usdc(ONE, entry)
-                            sh = budget / per
-                            us.shares[tok] += sh
-                            us.cost[tok] += budget
-                            cash -= budget
-                            costs["fees"] += sh * (per - entry)
-                            costs["slippage"] += sh * (entry - price)
-                            costs["turnover"] += budget
-                            copied["BUY" + ("_CASH_LIMITED" if limited else "")] += 1
+                            if small and args.small_orders == "round-up":
+                                budget = args.min_order_usd
+                            limited = budget > cash
+                            budget = min(budget, cash)
+                            if budget < args.min_order_usd:
+                                skips["NO_CASH" if limited else "BELOW_MIN_ORDER"] += 1
+                            else:
+                                if small:
+                                    copied["BUY_ROUNDED_UP"] += 1
+                                entry = min(price + args.slippage, MAX_PRICE)
+                                per = entry + m.fees.fee_usdc(ONE, entry)
+                                sh = budget / per
+                                us.shares[tok] += sh
+                                us.cost[tok] += budget
+                                cash -= budget
+                                costs["fees"] += sh * (per - entry)
+                                costs["slippage"] += sh * (entry - price)
+                                costs["turnover"] += budget
+                                copied["BUY" + ("_CASH_LIMITED" if limited else "")] += 1
                 elif r["side"] == "SELL":
+                    carry.pop(tok, None)
                     held = src.shares[tok]
                     frac = min(ONE, size / held) if held > ZERO else ONE
                     src.shares[tok] = max(ZERO, held - size)
